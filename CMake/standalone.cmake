@@ -1,6 +1,7 @@
 #############################################
 # REQUIRE ITK 3.20 OR LATER                 #
 #############################################
+## find_package load settings from an external project
 FIND_PACKAGE(ITK REQUIRED)
 INCLUDE(${ITK_USE_FILE})
 

@@ -30,6 +30,9 @@ SET(CMAKE_MODULE_PATH ${SNAP_SOURCE_DIR}/CMake)
 # MACROS
 #--------------------------------------------------------------------------------
 # Get today's date (see http://cmake.3232098.n2.nabble.com/How-to-get-the-current-date-td5776870.html)
+## macro(<name [<arg1> ...])
+##   <commands>
+## endmacro()
 MACRO (TODAY RESULT)
     IF (WIN32)
         EXECUTE_PROCESS(COMMAND "cmd" " /C date /T" OUTPUT_VARIABLE ${RESULT})
@@ -157,6 +160,7 @@ ELSE(DEFINED InsightApplications_SOURCE_DIR)
 	"Is SNAP being built separate from InsightApplications?")
 ENDIF(DEFINED InsightApplications_SOURCE_DIR)			
 
+## include load and run the script given
 IF( BUILD_OUTSIDE_INSIGHT_APPLICATIONS )
   INCLUDE(${SNAP_SOURCE_DIR}/CMake/standalone.cmake)
 ENDIF( BUILD_OUTSIDE_INSIGHT_APPLICATIONS )
