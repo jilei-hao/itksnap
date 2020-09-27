@@ -4,6 +4,10 @@
 # This CMake file is modeled after QtTest example project from
 # http://www.cmake.org/Wiki/BundleUtilitiesExample
 
+## set project name and store it in CMAKE_PROJECT_NAME
+## it also sets following variables:
+## <PROJECT-NAME>_SOURCE_DIR, i.e. SNAP_SOURCE_DIR
+## <PROJECT-NAME>_BINARY_DIR, i.e. SNAP_BINARY_DIR
 PROJECT(SNAP)
 
 #--------------------------------------------------------------------------------
@@ -13,6 +17,9 @@ cmake_minimum_required(VERSION 2.8.12)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+## if policy CMP0026 (since 3.0) is there
+## disable it to suppress warnings
+## CMP0026: Allowing reading of LOCATION properties from build-targets
 IF(POLICY CMP0026)
   cmake_policy(SET CMP0026 OLD)
 ENDIF(POLICY CMP0026)
