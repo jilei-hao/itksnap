@@ -160,7 +160,12 @@ ELSE(DEFINED InsightApplications_SOURCE_DIR)
 	"Is SNAP being built separate from InsightApplications?")
 ENDIF(DEFINED InsightApplications_SOURCE_DIR)			
 
-## include load and run the script given
+## include load and run the script to:
+## - Load Configuration cmake script for dependencies including:
+## -- ITK
+## -- VTK
+## -- Qt
+## -- Curl
 IF( BUILD_OUTSIDE_INSIGHT_APPLICATIONS )
   INCLUDE(${SNAP_SOURCE_DIR}/CMake/standalone.cmake)
 ENDIF( BUILD_OUTSIDE_INSIGHT_APPLICATIONS )
