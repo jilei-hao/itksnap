@@ -486,6 +486,7 @@ SET(UI_GENERIC_CXX
   GUI/Model/IntensityCurveModel.cxx
   GUI/Model/InteractiveRegistrationModel.cxx
   GUI/Model/InterpolateLabelModel.cxx
+  GUI/Model/SmoothLabelsModel.cxx
   GUI/Model/LabelEditorModel.cxx
   GUI/Model/LayerGeneralPropertiesModel.cxx
   GUI/Model/LayerTableRowModel.cxx
@@ -560,6 +561,7 @@ SET(UI_GENERIC_HEADERS
   GUI/Model/IntensityCurveModel.h
   GUI/Model/InteractiveRegistrationModel.h
   GUI/Model/InterpolateLabelModel.h
+  GUI/Model/SmoothLabelsModel.h
   GUI/Model/LabelEditorModel.h
   GUI/Model/LayerGeneralPropertiesModel.h
   GUI/Model/LayerSelectionModel.h
@@ -690,6 +692,7 @@ SET(UI_QT_CXX
   GUI/Qt/Windows/ImageIOWizard.cxx
   GUI/Qt/Windows/ImageIOWizard/OverlayRolePage.cxx
   GUI/Qt/Windows/InterpolateLabelsDialog.cxx
+  GUI/Qt/Windows/SmoothLabelsDialog.cxx
   GUI/Qt/Windows/LabelEditorDialog.cxx
   GUI/Qt/Windows/LayerInspectorDialog.cxx
   GUI/Qt/Windows/LabelSelectionPopup.cxx
@@ -783,6 +786,7 @@ SET(UI_MOC_HEADERS
   GUI/Qt/Windows/ImageIOWizard.h
   GUI/Qt/Windows/ImageIOWizard/OverlayRolePage.h
   GUI/Qt/Windows/InterpolateLabelsDialog.h
+  GUI/Qt/Windows/SmoothLabelsDialog.h
   GUI/Qt/Windows/LabelEditorDialog.h
   GUI/Qt/Windows/LayerInspectorDialog.h
   GUI/Qt/Windows/LabelSelectionPopup.h
@@ -867,6 +871,7 @@ SET(UI_FORMS
   GUI/Qt/Windows/ImageIODialog.ui
   GUI/Qt/Windows/ImageIOWizard/OverlayRolePage.ui
   GUI/Qt/Windows/InterpolateLabelsDialog.ui
+  GUI/Qt/Windows/SmoothLabelsDialog.ui
   GUI/Qt/Windows/LabelEditorDialog.ui
   GUI/Qt/Windows/LayerInspectorDialog.ui
   GUI/Qt/Windows/LabelSelectionPopup.ui
