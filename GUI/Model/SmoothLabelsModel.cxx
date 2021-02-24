@@ -444,12 +444,11 @@ SmoothLabelsModel
         this->m_Parent->GetDriver()->InvokeEvent(SegmentationChangeEvent());
         std::cout << "Selected labels have been smoothed!" << std::endl;
       } // End of Frame Processing
-
-      // Change label image to current frame
-      liw->SetTimePointIndex(m_Parent->GetDriver()->GetCursorTimePoint());
-      liw->Modified();
-
-      // --Debug
-      std::cout << "All Frames have been smoothed!" << std::endl;
     }
+  // Change label image to current frame
+  liw->SetTimePointIndex(m_Parent->GetDriver()->GetCursorTimePoint());
+  liw->Modified();
+
+  // --Debug
+  std::cout << "All Frames have been smoothed!" << std::endl;
 }
