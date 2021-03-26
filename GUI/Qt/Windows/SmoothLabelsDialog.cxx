@@ -185,8 +185,18 @@ void SmoothLabelsDialog::on_btnApply_clicked()
     msg = QString("No label is selected for smoothing!");
   else if (labelSet.size() == 2)
     {
-      auto it = labelSet.cbegin();
-      msg = QString("Proceed to smooth label %1?").arg(*(++it));
+      LabelType lb = 0;
+      // get the non-zero label
+      for (auto it = labelSet.cbegin(); it != labelSet.cend(); ++it)
+        {
+          if (*it != 0)
+            {
+              lb = *it;
+              break;
+            }
+        }
+
+      msg = QString("Proceed to smooth label %1?").arg(lb);
     }
   else
     msg = QString("Proceed to smooth these %1 labels?").arg(labelSet.size() - 1);
