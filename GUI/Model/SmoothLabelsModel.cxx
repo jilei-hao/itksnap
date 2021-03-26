@@ -234,10 +234,10 @@ SmoothLabelsModel
 
       // Execute Smoothing Logic
       {
-        // Get all labels
+        // Get all labels that have volume
         for (auto cit = stats.cbegin(); cit != stats.cend(); ++cit)
           {
-            if(labelsToSmooth.count(cit->first))
+            if(cit->second.count > 0)
               allLabels.push_back(cit->first);
           }
 
@@ -333,12 +333,12 @@ SmoothLabelsModel
             fltThreshold->Update();
 
             // Smooth selected labels. For unselected labels, keep intensity as 1
-            bool isLabelSelected = labelsToSmooth.count(*cit);
+            bool labelNeedsSmooth = labelsToSmooth.count(*cit);
             // -- keep intensity for unselected label
             VotingImageType::Pointer crntLabelBinarized = fltThreshold->GetOutput();
 
             // Only smooth selected labels
-            if (isLabelSelected)
+            if (labelNeedsSmooth)
               {
                 std::cout << "Smoothing..." << endl;
                 // Smooth the binarized image
@@ -450,5 +450,8 @@ SmoothLabelsModel
   liw->Modified();
 
   // --Debug
-  std::cout << "All Frames have been smoothed!" << std::endl;
+  if (SmoothAllFrames)
+    std::cout << "All Frames have been smoothed" << std::endl;
+  else
+    std::cout << "Current frame has been smoothed" << std::endl;
 }
