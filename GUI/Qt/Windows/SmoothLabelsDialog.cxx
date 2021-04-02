@@ -11,6 +11,9 @@
 #include <QSortFilterProxyModel>
 #include <QStandardItemModel>
 #include <QMessageBox>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
+#include <QDialogButtonBox>
 
 SmoothLabelsDialog::SmoothLabelsDialog(QWidget *parent) :
   QDialog(parent),
@@ -60,7 +63,7 @@ public:
           items[0]->setCheckState(Qt::CheckState::Checked);
           items[0]->setCheckable(false);
           items[0]->setEnabled(false);
-          items[0]->setToolTip("The background label always participates in smoothing.");
+          items[0]->setToolTip("Current smoothing algorithm always involves background label");
         }
   }
 };
@@ -179,6 +182,7 @@ void SmoothLabelsDialog::on_btnApply_clicked()
       labelSet.insert(oneLabel);
     }
 
+  // Build the confirmation box
   QMessageBox confirmBox;
   QString msg;
   if (labelSet.size() < 1)
@@ -206,6 +210,7 @@ void SmoothLabelsDialog::on_btnApply_clicked()
 
   int ret = confirmBox.exec();
 
+  // Execute smoothing logic
   if (ret == QMessageBox::Ok)
     {
       // Assemble sigma array
@@ -221,6 +226,38 @@ void SmoothLabelsDialog::on_btnApply_clicked()
 
       m_Model->Smooth(labelSet, sigmaArr, unit, ui->chkSmoothAllFrames->isChecked());
     }
+
+  // Build the result panel
+  QDialog *resultDialog = new QDialog(this);
+  resultDialog->setFixedSize(550, 281);
+
+
+  QTreeWidget *resultTree = new QTreeWidget(resultDialog);
+  resultTree->setColumnCount(5);
+  QStringList hdr;
+  hdr << "Frame" << "Label" << "Change" << "Before" << "After";
+  resultTree->setHeaderLabels(hdr);
+  resultTree->setAlternatingRowColors(true);
+
+  QVBoxLayout *vlo = new QVBoxLayout(resultDialog);
+  vlo->addWidget(resultTree);
+
+  QDialogButtonBox *btnBox = new QDialogButtonBox(resultDialog);
+  QPushButton *btnOK = new QPushButton("OK");
+  btnBox->addButton(btnOK, QDialogButtonBox::AcceptRole);
+  connect(btnOK, SIGNAL(clicked()), resultDialog, SLOT(accept()));
+  QGridLayout *btnLayout = new QGridLayout();
+  btnLayout->addWidget(btnBox);
+  vlo->addLayout(btnLayout);
+
+  QTreeWidgetItem *sample = new QTreeWidgetItem(resultTree);
+  sample->setText(0, "1");
+  sample->setText(1, "Label 3");
+  sample->setText(2, "500");
+  sample->setText(3, "1000");
+  sample->setText(4, "1500");
+
+  ret = resultDialog->exec();
 }
 
 void SmoothLabelsDialog::on_btnClose_clicked()
