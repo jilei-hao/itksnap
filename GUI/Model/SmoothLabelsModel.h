@@ -23,9 +23,6 @@ public:
   /** Initialize with the parent model */
   void SetParentModel(GlobalUIModel *parent);
 
-  /** Model for the label that will be smoothed */
-  //irisGenericPropertyAccessMacro(LabelsToSmooth, LabelType, ColorLabelItemSetDomain)
-
   /** Update the state of the widget whenever it is shown */
   void UpdateOnShow();
 
