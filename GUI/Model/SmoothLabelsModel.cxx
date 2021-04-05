@@ -148,6 +148,11 @@ void SmoothLabelsModel::UpdateOnShow()
 
 }
 
+GlobalUIModel* SmoothLabelsModel::GetParent() const
+{
+  return this->m_Parent;
+}
+
 void
 SmoothLabelsModel
 ::Smooth(std::unordered_set<LabelType> &labelsToSmooth,
@@ -160,14 +165,16 @@ SmoothLabelsModel
     labelsToSmooth.insert(0);
 
   // --Debug
-  std::cout << "Labels to Smooth: " << endl;
-  for (auto cit = labelsToSmooth.cbegin(); cit != labelsToSmooth.cend(); ++cit)
-      std::cout << *cit << endl;
-  std::cout << "Sigma Array" << endl;
-  for (auto it = sigma.begin(); it != sigma.end(); ++it)
-      std::cout << std::to_string(*it) << " ";
-  std::cout << "SmoothAllFrames: " << SmoothAllFrames << std::endl;
-  std::cout << std::endl;
+  {
+    std::cout << "Labels to Smooth: " << endl;
+    for (auto cit = labelsToSmooth.cbegin(); cit != labelsToSmooth.cend(); ++cit)
+        std::cout << *cit << endl;
+    std::cout << "Sigma Array" << endl;
+    for (auto it = sigma.begin(); it != sigma.end(); ++it)
+        std::cout << std::to_string(*it) << " ";
+    std::cout << "SmoothAllFrames: " << SmoothAllFrames << std::endl;
+    std::cout << std::endl;
+  }
 
   // Get the segmentaton wrapper
   LabelImageWrapper *liw = m_Parent->GetDriver()->GetSelectedSegmentationLayer();

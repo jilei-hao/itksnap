@@ -275,7 +275,7 @@ color: gray;</string>
   <widget class="QPushButton" name="btnApply">
    <property name="geometry">
     <rect>
-     <x>120</x>
+     <x>110</x>
      <y>510</y>
      <width>93</width>
      <height>28</height>
