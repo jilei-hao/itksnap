@@ -22,7 +22,7 @@ VoxelChangeReportModel::VoxelChangeReportType&
 VoxelChangeReportModel::getReport()
 {
   this->PopulateReportCache(false);
-  this->PrintInfo();
+  // this->PrintInfo();
   return this->m_ReportCache;
 }
 
