@@ -3,6 +3,9 @@
 #include "SmoothLabelsDialog.h"
 #include "ui_SmoothLabelsDialog.h"
 #include "SmoothLabelsModel.h"
+#include "VoxelChangeReportDialog.h"
+#include "VoxelChangeReportModel.h"
+#include "GlobalUIModel.h"
 #include <unordered_set>
 
 #include "QtComboBoxCoupling.h"
@@ -210,9 +213,15 @@ void SmoothLabelsDialog::on_btnApply_clicked()
 
   int ret = confirmBox.exec();
 
+  // Build the result panel
+  VoxelChangeReportDialog *report = new VoxelChangeReportDialog(this);
+  report->SetModel(m_Model->GetParent()->GetVoxelChangeReportModel());
+
   // Execute smoothing logic
   if (ret == QMessageBox::Ok)
     {
+      report->setStartPoint();
+
       // Assemble sigma array
       std::vector<double> sigmaArr;
       sigmaArr.push_back(ui->sigmaX->text().toDouble());
@@ -225,9 +234,11 @@ void SmoothLabelsDialog::on_btnApply_clicked()
       SigmaUnit unit = ui->sigmaUnit->currentIndex() == 0 ? SigmaUnit::mm : SigmaUnit::vox;
 
       m_Model->Smooth(labelSet, sigmaArr, unit, ui->chkSmoothAllFrames->isChecked());
+
+      report->showReport();
     }
 
-  // Build the result panel
+  /*
   QDialog *resultDialog = new QDialog(this);
   resultDialog->setFixedSize(550, 281);
 
@@ -258,6 +269,7 @@ void SmoothLabelsDialog::on_btnApply_clicked()
   sample->setText(4, "1500");
 
   ret = resultDialog->exec();
+  */
 }
 
 void SmoothLabelsDialog::on_btnClose_clicked()

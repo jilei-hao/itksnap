@@ -36,6 +36,9 @@ public:
   /** Get the model describing the current selected label (and its domain) */
   irisGetMacro(CurrentLabelModel, ConcreteColorLabelPropertyModel *)
 
+  /** Get Parent Model */
+  GlobalUIModel* GetParent() const;
+
 
 protected:
 
