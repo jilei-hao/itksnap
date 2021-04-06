@@ -50,6 +50,10 @@ void VoxelChangeReportModel::PopulateReportCache(bool isStartingRun)
       // Count voxels
       voxelCounter.GetVoxelCount(res, m_Parent->GetDriver());
 
+      // Get single voxel volume
+      const double *spacing = liw->GetImageBase()->GetSpacing().GetDataPointer();
+      const double volVoxel = spacing[0] * spacing[1] * spacing[2];
+
       // Initialize label voxel count entries
       LabelVoxelChangeType lvc;
       for (auto cit = res.cbegin(); cit != res.cend(); ++cit)
@@ -59,7 +63,8 @@ void VoxelChangeReportModel::PopulateReportCache(bool isStartingRun)
             {
               // Allocate a new VoexlChange
               VoxelChange *ch = new VoxelChange();
-              ch->before = cit->second;
+              ch->cnt_before = cit->second;
+              ch->vol_before_mm3 = ch->cnt_before * volVoxel;
               lvc[cit->first] = ch;
 
               // Add current frame's counting result to report
@@ -69,8 +74,11 @@ void VoxelChangeReportModel::PopulateReportCache(bool isStartingRun)
             {
               // Get existing VoxelChange
               VoxelChange *ech = m_ReportCache[i][cit->first];
-              ech->after = cit->second;
-              ech->change = ech->after - ech->before;
+              ech->cnt_after = cit->second;
+              ech->vol_after_mm3 = ech->cnt_after * volVoxel;
+              ech->vol_change_mm3 = ech->vol_after_mm3 - ech->vol_before_mm3;
+              ech->vol_change_pct = ech->vol_change_mm3 / ech->vol_before_mm3;
+              ech->cnt_change = ech->cnt_after - ech->cnt_before;
             }
 
         }

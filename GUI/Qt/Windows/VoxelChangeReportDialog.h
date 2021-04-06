@@ -24,6 +24,9 @@ public:
   /** Show change report after the change */
   void showReport();
 
+  /** Set report description */
+  void setDescription(QString des);
+
   /** Set Model */
   void SetModel(VoxelChangeReportModel *model);
 
