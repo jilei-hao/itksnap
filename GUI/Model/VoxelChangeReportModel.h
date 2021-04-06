@@ -14,18 +14,26 @@ public:
   /** Struct storing voxel count change */
   struct VoxelChange
   {
-    unsigned long before = 0;
-    unsigned long after = 0;
-    long long change = 0; // use long long for change < -2,147,483,678 (lower limit of long)
+    unsigned long cnt_before = 0;
+    unsigned long cnt_after = 0;
+    double vol_before_mm3 = 0.0;
+    double vol_after_mm3 = 0.0;
+    double vol_change_pct = 0.0;
+    double vol_change_mm3 = 0.0;
+    long long cnt_change = 0; // use long long for change < -2,147,483,678 (lower limit of long)
     /** Constructor */
     VoxelChange() {}
 
     /** Print Info */
     void PrintInfo() const
     {
-      std::cout << "before: " << before << '\t'
-                << "after: " << after << '\t'
-                << "change: " << change << std::endl;
+      std::cout << "cnt_before: " << cnt_before << ", "
+                << "cnt_after: " << cnt_after << ", "
+                << "vol_before_mm3: " << vol_before_mm3 << ", "
+                << "vol_after_mm3: " << vol_after_mm3 << ", "
+                << "vol_change_mm3: " << vol_change_mm3 << ", "
+                << "vol_change_pct: " << vol_change_pct << ", "
+                << "change: " << cnt_change << std::endl;
     }
   };
 

@@ -22,6 +22,11 @@ void VoxelChangeReportDialog::setStartPoint()
   m_Model->setStartingPoint();
 }
 
+void VoxelChangeReportDialog::setDescription(QString des)
+{
+  ui->description->setText(des);
+}
+
 void VoxelChangeReportDialog::showReport()
 {
   // Get report from the model
@@ -32,9 +37,13 @@ void VoxelChangeReportDialog::showReport()
   QTreeWidget *tree = ui->tree;
 
   // -- configure columns
-  tree->setColumnCount(5);
+  tree->setColumnCount(4);
   QStringList header;
-  header << "Frame" << "Label" << "Before" << "After" << "Change";
+  header << "Frame" << "Label" << "Original Volume (mm3)" << "Volume Change %";
+  tree->setColumnWidth(0, 70);
+  tree->setColumnWidth(1, 70);
+  tree->setColumnWidth(2, 175);
+  tree->setColumnWidth(3, 150);
   tree->setHeaderLabels(header);
   tree->setAlternatingRowColors(true);
 
@@ -47,19 +56,26 @@ void VoxelChangeReportDialog::showReport()
           frame->setText(0, QString::number(fit->first + 1)); // frame
           for (auto lit = fit->second.cbegin(); lit != fit->second.cend(); ++lit)
             {
-              if (lit->second->change != 0)
+              if (lit->second->cnt_change != 0)
                 {
                   QTreeWidgetItem *labelLine = new QTreeWidgetItem(frame);
                   labelLine->setText(0, QString::number(fit->first + 1)); // frame
                   labelLine->setText(1, QString::number(lit->first)); // label
-                  labelLine->setText(2, QString::number(lit->second->before)); // before
-                  labelLine->setText(3, QString::number(lit->second->after)); // after
-                  labelLine->setText(4, QString::number(lit->second->change)); // change
+                  labelLine->setText(2, QString::number(lit->second->vol_before_mm3)); // volume before
+                  labelLine->setText(3, QString{"%1%"}.arg(lit->second->vol_change_pct)); // volume change %
                 }
             }
         }
-
     }
+
+  /*
+  // Always expand the first item
+  if (firstItem)
+    {
+      connect(this, SIGNAL(finished(0)), tree, SLOT(expandItem(firstItem)));
+      emit(this->finished(0));
+    }
+  */
 
 
   // Render the GUI

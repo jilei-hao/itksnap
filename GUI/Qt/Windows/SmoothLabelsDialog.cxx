@@ -216,6 +216,7 @@ void SmoothLabelsDialog::on_btnApply_clicked()
   // Build the result panel
   VoxelChangeReportDialog *report = new VoxelChangeReportDialog(this);
   report->SetModel(m_Model->GetParent()->GetVoxelChangeReportModel());
+  report->setDescription("Voxel Changes after Smoothing");
 
   // Execute smoothing logic
   if (ret == QMessageBox::Ok)
