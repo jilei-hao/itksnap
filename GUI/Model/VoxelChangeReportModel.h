@@ -50,6 +50,9 @@ public:
   /** Set Parent Model */
   void SetParentModel(GlobalUIModel *parent);
 
+  /** Get Color Label */
+  SmartPtr<ColorLabelTable> GetColorLabelTable();
+
   /** Debug Print Info */
   void PrintInfo() const;
 

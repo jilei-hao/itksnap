@@ -107,6 +107,12 @@ void VoxelChangeReportModel::ResetReportCache()
   m_ReportCache.clear();
 }
 
+SmartPtr<ColorLabelTable>
+VoxelChangeReportModel::GetColorLabelTable()
+{
+  return m_Parent->GetDriver()->GetColorLabelTable();
+}
+
 /*
 VoxelChangeReportModel::VoxelChangeReportType&
 VoxelChangeReportModel::getReport()
