@@ -1168,7 +1168,7 @@ GuidedNativeImageIO
   ImageBase *native = this->GetNativeImage();
 
   // Get the native image
-  typedef itk::VectorImage<TNative, 3> InputImageType;
+  typedef itk::VectorImage<TNative, 4> InputImageType;
   typename InputImageType::Pointer input = 
     reinterpret_cast<InputImageType *>(native);
   assert(input);
@@ -1220,7 +1220,7 @@ GuidedNativeImageIO
   ImageBase *native = this->GetNativeImage();
 
   // Get the native image
-  typedef itk::VectorImage<TNative, 3> InputImageType;
+  typedef itk::VectorImage<TNative, 4> InputImageType;
   typename InputImageType::Pointer input = 
     reinterpret_cast<InputImageType *>(native);
   assert(input);
