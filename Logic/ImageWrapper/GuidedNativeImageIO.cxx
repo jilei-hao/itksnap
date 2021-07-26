@@ -386,6 +386,10 @@ GuidedNativeImageIO
   // Get the format specified in the folder
   m_FileFormat = GetFileFormat(folder);
 
+  // Is the DICOM single image an Echo Cartesian DICOM image?
+  if (m_FileFormat == FORMAT_DICOM_FILE || m_FileFormat == FORMAT_COUNT)
+    m_FileFormat = GuessFormatForFileName(fname, true);
+
   // Choose the approach based on the file format
   switch(m_FileFormat)
     {
@@ -400,6 +404,7 @@ GuidedNativeImageIO
     case FORMAT_VTK:        m_IOBase = itk::VTKImageIO::New();           break;
     case FORMAT_VOXBO_CUB:  m_IOBase = itk::VoxBoCUBImageIO::New();      break;
     case FORMAT_DICOM_DIR:
+    case FORMAT_ECHO_CARTESIAN_DICOM:
     case FORMAT_DICOM_FILE: m_IOBase = itk::GDCMImageIO::New();          break;
     case FORMAT_RAW:
       {
@@ -438,29 +443,6 @@ GuidedNativeImageIO
     }
 }
 
-template<class ImageType>
-class DebuggingFileWriter
-{
-public:
-  typedef itk::ImageFileWriter<ImageType> ImageWriterType;
-  DebuggingFileWriter() : m_Writer(ImageWriterType::New()) {};
-  void WriteToFile (std::string &fileName, typename ImageType::Pointer data)
-  {
-
-    m_Writer->SetFileName(fileName);
-    m_Writer->SetInput(data);
-    try
-    {
-      m_Writer->Update();
-    } catch (itk::ExceptionObject &error)
-    {
-      std::cerr << "Error: " << error << std::endl;
-    }
-  }
-private:
-  typename ImageWriterType::Pointer m_Writer;
-};
-
 void
 GuidedNativeImageIO
 ::ReadNativeImageHeader(const char *FileName, Registry &folder)
@@ -475,10 +457,6 @@ GuidedNativeImageIO
                         "ITK-SNAP failed to create an ImageIO object for the "
                         "image '%s' using format '%s'.",
                         FileName, m_Hints["Format"][""]);
-
-  // issue #26: 4D Echocardiography Cartesian DICOM (ECD) identifying logic
-  // -- Reset ECDImage flag
-  m_IsECDImage = false;
 
   if (m_FileFormat == FORMAT_DICOM_FILE)
     {
@@ -497,12 +475,6 @@ GuidedNativeImageIO
            manufacturer.resize(origManu.size());
            // -- transform to upper case
            std::transform(origManu.begin(), origManu.end(), manufacturer.begin(), ::toupper);
-
-           // --Debug
-           // std::cout << "ECD manufacturer string: " << manufacturer << std::endl;
-
-           if (manufacturer == "PMS QLAB CART EXPORT")
-             m_IsECDImage = true;
         }
     }
 
@@ -554,7 +526,8 @@ GuidedNativeImageIO
     m_IOBase->SetFileName(m_DICOMFiles[0]);
     m_IOBase->ReadImageInformation();
     }
-  else if (m_IsECDImage)
+
+  if (m_FileFormat == FORMAT_ECHO_CARTESIAN_DICOM)
     {
       gdcm::Reader ecd_reader;
       ecd_reader.SetFileName(FileName);
@@ -593,12 +566,12 @@ GuidedNativeImageIO
             ecd_spc.push_back(std::stod(sf.ToString(deltaX)) * 10.0);
             ecd_spc.push_back(std::stod(sf.ToString(deltaY)) * 10.0);
             ecd_spc.push_back(std::stod(sf.ToString(deltaZ)) * 10.0);
+            // frame time is the spacing along the time axis
+            ecd_spc.push_back(std::stod(sf.ToString(frameTime)));
           } catch (const std::exception &e)
           {
             std::cerr << e.what() << std::endl;
           }
-
-          ecd_spc.push_back(1.0);
 
           // Set to 4d
           m_IOBase->SetNumberOfDimensions(4);
@@ -843,7 +816,7 @@ GuidedNativeImageIO
       m_NativeComponents = m_DICOMImagesPerIPP;
       }
     } 
-  else if (m_IsECDImage)
+  else if (m_FileFormat == FORMAT_ECHO_CARTESIAN_DICOM)
     {
       // issue #26: 4D Echocardiography Cartesian DICOM (ECD) Image Reading
 
@@ -1657,6 +1630,10 @@ GuidedNativeImageIO::GuessFormatForFileName(
     // Check for DICOM
     if(havebuff && !strncmp(buffer+128,"DICM",4))
       {
+      // issue #26
+      if (!strncmp(buffer+556, "PMS QLAB Cart Export", 20))
+        return FORMAT_ECHO_CARTESIAN_DICOM;
+
       // PY: Now that I cleaned up the DICOM reader, we should never default
       // to single DICOM file anymore. That's just too annoying
       return FORMAT_DICOM_DIR;
