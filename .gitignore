@@ -14,3 +14,6 @@ CMakeLists.txt.user*
 CTestConfig.cmake.user*
 *.autosave
 .clangd
+
+# build directory
+build/
