@@ -199,15 +199,11 @@ void Generic3DRenderer::SetModel(Generic3DModel *model)
   // Get a pointer to the application class
   IRISApplication *app = m_Model->GetParentUI()->GetDriver();
 
-  // Record and rebroadcast changes in the model
-  //Rebroadcast(app->GetMeshManager(), itk::ModifiedEvent(), ModelUpdateEvent());
-
   // Respond to changes in image dimension - these require big updates
   Rebroadcast(app, MainImageDimensionsChangeEvent(), ModelUpdateEvent());
 
   // Respond to changes to the segmentation. These are ignored unless we are
   // in continous update mode, in which case the renderers are rebuilt
-  // Rebroadcast(app, SegmentationChangeEvent(), ModelUpdateEvent());
   Rebroadcast(app, LevelSetImageChangeEvent(), ModelUpdateEvent());
   Rebroadcast(m_Model->GetContinuousUpdateModel(), ValueChangedEvent(), ModelUpdateEvent());
 

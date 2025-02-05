@@ -9,6 +9,7 @@
 #include <vtkPolyDataWriter.h>
 #include <vtkSTLWriter.h>
 #include <vtkBYUWriter.h>
+#include <vtkXMLPolyDataWriter.h>
 #include <vtkTriangleFilter.h>
 
 GuidedMeshIO
@@ -36,7 +37,7 @@ GuidedMeshIO::m_MeshFormatDescriptorMap =
   { FORMAT_STL, { "STL Mesh",   {".stl"},         false,  true } },
   { FORMAT_VRML,{ "VRML Scene", {".vrml"},        false,  true } },
   { FORMAT_VTK, { "VTK Mesh",   {".vtk"},         true,   true } },
-  { FORMAT_VTP, { "VTP Mesh",   {".vtp"},         true,   false } }
+  { FORMAT_VTP, { "VTP Mesh",   {".vtp"},         true,   true } },
 };
 
 
@@ -147,6 +148,13 @@ GuidedMeshIO
     writer->Update();
     writer->Delete();
     tri->Delete();
+    }
+  else if(format == FORMAT_VTP)
+    {
+    vtkNew<vtkXMLPolyDataWriter> writer;
+    writer->SetInputData(mesh);
+    writer->SetFileName(FileName);
+    writer->Update();
     }
   else 
     throw itk::ExceptionObject("Illegal format specified for saving image");

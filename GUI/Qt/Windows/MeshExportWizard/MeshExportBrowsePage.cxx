@@ -46,17 +46,19 @@ void MeshExportBrowsePage::initializePage()
 
   if(m_Model->GetSaveMode() == MeshExportModel::SAVE_SCENE)
     {
-		filter = QString("%1 (.vtk);; %2 (.vrml);; %3 (.stl)")
+    filter = QString("%1 (.vtk);; %2 (.vrml);; %3 (.stl);; %4 (.vtp)")
         .arg(from_utf8(domain[GuidedMeshIO::FORMAT_VTK]))
 				.arg(from_utf8(domain[GuidedMeshIO::FORMAT_VRML]))
-				.arg(from_utf8(domain[GuidedMeshIO::FORMAT_STL]));
+        .arg(from_utf8(domain[GuidedMeshIO::FORMAT_STL]))
+        .arg(from_utf8(domain[GuidedMeshIO::FORMAT_VTP]));
     }
   else
     {
-    filter = QString("%1 (.vtk);; %2 (.stl);; %3 (.byu .y)")
+    filter = QString("%1 (.vtk);; %2 (.stl);; %3 (.byu .y);; %4 (.vtp)")
         .arg(from_utf8(domain[GuidedMeshIO::FORMAT_VTK]))
         .arg(from_utf8(domain[GuidedMeshIO::FORMAT_STL]))
-        .arg(from_utf8(domain[GuidedMeshIO::FORMAT_BYU]));
+        .arg(from_utf8(domain[GuidedMeshIO::FORMAT_BYU]))
+        .arg(from_utf8(domain[GuidedMeshIO::FORMAT_VTP]));
     }
 
   // Create the file panel
