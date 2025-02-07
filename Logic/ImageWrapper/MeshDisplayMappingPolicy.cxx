@@ -272,13 +272,18 @@ UpdateAppearance(ActorPool *pool, unsigned int)
 void GenericMeshDisplayMappingPolicy::
 ConfigureLegend(vtkScalarBarActor* legend)
 {
-  legend->SetLookupTable(m_LookupTable);
+
 
   auto prop = m_Wrapper->GetActiveDataArrayProperty();
 
   if (!prop)
+    {
+    legend->SetLookupTable(nullptr);
+    legend->SetTitle("No Data");
     return;
+    }
 
+  legend->SetLookupTable(m_LookupTable);
   legend->SetTitle(prop->GetName());
 }
 
