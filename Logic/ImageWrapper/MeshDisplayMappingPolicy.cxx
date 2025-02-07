@@ -196,7 +196,23 @@ UpdateAppearance(ActorPool *pool, unsigned int)
   auto prop = m_Wrapper->GetActiveDataArrayProperty();
 
   if (!prop)
+    {
+    std::cout << "[GenericMeshDMP::UpdateAppearance] No active data array property" << std::endl;
+    // solid color for all actors
+    auto actorMap = pool->GetActorMap();
+    for (auto it = actorMap->begin(); it != actorMap->end(); ++it)
+      {
+      auto actor = it->second;
+      auto prop = actor->GetProperty();
+      prop->SetColor(1.0, 1.0, 1.0);
+
+      // disable scalar mapping
+      auto mapper = static_cast<vtkPolyDataMapper*>(actor->GetMapper());
+      mapper->SetScalarVisibility(false);
+      }
+
     return;
+    }
 
   // This should never happen, check data property implementation
   assert(prop->GetType() != MeshDataType::COUNT);
