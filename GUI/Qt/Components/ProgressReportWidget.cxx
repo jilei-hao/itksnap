@@ -9,10 +9,10 @@
 #include <QVBoxLayout>
 #include <QPainter>
 #include <QTimer>
+#include <QPointer>
 #include <QEvent>
 #include <QResizeEvent>
 #include <QVBoxLayout>
-#include <QCoreApplication>
 
 
 // === ProgressReportWidget =====================================
@@ -244,15 +244,9 @@ ProgressReportWidget::updateTaskWithoutProgress(const QString &taskId)
   if (!m_tasks.contains(taskId))
     return;
 
-  // There is nothing to update for the task, but we should still process events
-  // and in the future, offer a way to abort the running computation
-
   // Restart removal timer
   auto *task = m_tasks[taskId];
   task->autoRemoveTimer.start(m_autoRemoveSecs * 1000);
-
-  // Process events before we go back to the blocking computation
-  QCoreApplication::processEvents();
 }
 
 void
@@ -275,9 +269,6 @@ ProgressReportWidget::updateTaskProgress(const QString &id, int pct)
 
   // Restart removal timer
   task->autoRemoveTimer.start(m_autoRemoveSecs * 1000);
-
-  // Process events before we go back to the blocking computation
-  QCoreApplication::processEvents();
 }
 
 void
@@ -308,34 +299,55 @@ ProgressReportWidget::finishTask(const QString &id)
     m_fadeInAnimation->stop();
   }
 
+  // Stop the auto-remove timer: we own removal now via the fade animation
+  task->autoRemoveTimer.stop();
+
+  // Disconnect any previous fade-animation connections on this timer
+  // (guards against finishTask being called more than once for the same task)
+  disconnect(&task->fadeAndRemoveTimer, nullptr, this, nullptr);
+
   // Start a timer to fade the task out and remove it
   auto *eff = new QGraphicsOpacityEffect(task->widget);
   task->widget->setGraphicsEffect(eff);
   eff->setOpacity(1.0);
 
-  // Restart auto-removal
+  // QPointer tracks eff and widget lifetimes; if either is deleted externally
+  // (e.g. parent widget destroyed), the pointer becomes null and the lambda
+  // returns safely instead of crashing.
+  QPointer<QGraphicsOpacityEffect> effPtr = eff;
+  QPointer<ProgressTaskWidget>     widgetPtr = task->widget;
+
   task->fadeAndRemoveTimer.stop();
   task->fadeAndRemoveTimer.setSingleShot(true);
   task->fadeAndRemoveTimer.start(50);
   connect(&task->fadeAndRemoveTimer, &QTimer::timeout, this, [=] {
-    double opacity = eff->opacity() - 0.05;
+    if (!effPtr)
+    {
+      // eff was already deleted externally; just clean up the task
+      removeTask(id);
+      return;
+    }
+    double opacity = effPtr->opacity() - 0.05;
     if (opacity > 0)
     {
-      eff->setOpacity(opacity);
-      task->widget->repaint();
-      qDebug() << "Fading out task " << id << " to opacity " << opacity;
+      effPtr->setOpacity(opacity);
+      if (widgetPtr)
+        widgetPtr->repaint();
       task->fadeAndRemoveTimer.start(50);
     }
     else
     {
-      task->widget->setGraphicsEffect(nullptr);
-      task->widget->setVisible(false);
-      removeTask(id);
+      if (widgetPtr)
+      {
+        widgetPtr->setGraphicsEffect(nullptr); // deletes eff → effPtr becomes null
+        widgetPtr->setVisible(false);
+      }
+      // Defer removeTask so we don't delete task->fadeAndRemoveTimer from
+      // within its own timeout callback (would be a use-after-free).
+      disconnect(&task->fadeAndRemoveTimer, nullptr, this, nullptr);
+      QTimer::singleShot(0, this, [=] { removeTask(id); });
     }
   });
-
-  // Let the auto-remove timer remove the task
-  // task->autoRemoveTimer.start(m_autoRemoveSecs * 1000);
 }
 
 void

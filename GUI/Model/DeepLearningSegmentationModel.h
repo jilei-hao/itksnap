@@ -7,7 +7,10 @@
 #include <tuple>
 #include "Registry.h"
 #include "itkCommand.h"
+#include <functional>
 #include <mutex>
+#include <QFutureWatcher>
+#include <QtConcurrent>
 
 class GlobalUIModel;
 class ImageWrapperBase;
@@ -122,6 +125,17 @@ struct RemoteImageView
   }
 };
 */
+
+/** Result returned by background interaction workers */
+struct InteractionResult
+{
+  bool        success = false;
+  std::string json_output;
+  std::string model_id;
+  int         axis = -1;
+  std::string commit_name;
+  std::string error_message;
+};
 
 } // Namespace dls_model
 
@@ -280,6 +294,12 @@ public:
   itkEventMacro(ServerChangeEvent, IRISEvent)
   FIRES(ServerChangeEvent)
 
+  // Events fired when an async interaction starts/completes
+  itkEventMacro(InteractionStartedEvent, IRISEvent)
+  itkEventMacro(InteractionCompletedEvent, IRISEvent)
+  FIRES(InteractionStartedEvent)
+  FIRES(InteractionCompletedEvent)
+
   /** Set the delegate that can launch/control local server */
   void SetLocalServerDelegate(AbstractLocalDeepLearningServerDelegate *delegate);
 
@@ -372,6 +392,19 @@ public:
     return this->PerformScribbleOrLassoInteraction("process_lasso_interaction", model_id, layer, axis, seg, reverse);
   }
 
+  /** Async (non-blocking) point interaction — returns immediately; result applied on main thread */
+  void AsyncPerformPointInteraction(std::string model_id, ImageWrapperBase *layer, int axis,
+                                    Vector3ui pos, bool reverse,
+                                    std::function<void(bool)> on_complete);
+
+  /** Async (non-blocking) scribble interaction — returns immediately; result applied on main thread */
+  void AsyncPerformScribbleInteraction(std::string model_id, ImageWrapperBase *layer, int axis,
+                                       SmartPtr<LabelImageWrapper> seg, bool reverse,
+                                       std::function<void(bool)> on_complete);
+
+  /** Returns true if a background DLS interaction is currently running */
+  bool IsInteractionInProgress() const { return m_InteractionInProgress; }
+
   /** Reset all statuses and proxy URL to inital state */
   void ResetConnection();
 
@@ -461,6 +494,18 @@ protected:
                                          int                axis,
                                          LabelImageWrapper *seg,
                                          bool               reverse);
+
+  // Background-thread-safe workers: make REST calls, return raw JSON (no Qt, no UpdateSegmentation)
+  dls_model::InteractionResult DoPointInteractionBg(std::string model_id, ImageWrapperBase *layer,
+                                                    int axis, Vector3ui pos, bool reverse);
+
+  dls_model::InteractionResult DoScribbleInteractionBg(const char *target_url,
+                                                       std::string model_id,
+                                                       ImageWrapperBase *layer, int axis,
+                                                       SmartPtr<LabelImageWrapper> seg, bool reverse);
+
+  // True while a background interaction future is running; read/written on main thread only
+  bool m_InteractionInProgress = false;
 
   // Get the server metadata for a model with a given ID or throw exception if model
   // is not in the metadata list

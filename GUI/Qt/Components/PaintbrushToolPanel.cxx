@@ -32,30 +32,47 @@ public:
 
   virtual std::string StartTask(const char *title, bool trackProgress) override
   {
-    static int counter = 0;
+    static std::atomic<int> counter{0};
 
-    counter++;
-    size_t hash = std::hash<const char *>{}(title) ^ std::hash<int>{}(counter);
+    int c = ++counter;
+    size_t hash = std::hash<const char *>{}(title) ^ std::hash<int>{}(c);
     std::string id = std::string("task") + std::to_string(hash);
-    m_Widget->startTask(QString::fromStdString(id), QString::fromUtf8(title), trackProgress);
+
+    // May be called from a background thread; widget calls must be on the main thread
+    QString qid = QString::fromStdString(id);
+    QString qtitle = QString::fromUtf8(title);
+    if (QThread::currentThread() == m_Widget->thread())
+    {
+      m_Widget->startTask(qid, qtitle, trackProgress);
+    }
+    else
+    {
+      QMetaObject::invokeMethod(m_Widget, [=]() {
+        m_Widget->startTask(qid, qtitle, trackProgress);
+      }, Qt::BlockingQueuedConnection);
+    }
     return id;
   }
 
   virtual void UpdateProgress(const std::string &task_id, double percent) override
   {
-    if(std::isnan(percent))
-    {
-      m_Widget->updateTaskWithoutProgress(QString::fromStdString(task_id));
-    }
-    else
-    {
-      m_Widget->updateTaskProgress(QString::fromStdString(task_id), static_cast<int>(percent * 100));
-    }
+    // May be called from a background thread; marshal to the main thread
+    QString qid = QString::fromStdString(task_id);
+    QMetaObject::invokeMethod(m_Widget, [=]() {
+      if(std::isnan(percent))
+        m_Widget->updateTaskWithoutProgress(qid);
+      else
+        m_Widget->updateTaskProgress(qid, static_cast<int>(percent * 100));
+    }, Qt::QueuedConnection);
   }
 
   virtual void CompleteTask(const std::string &task_id) override
   {
-    m_Widget->finishTask(QString::fromStdString(task_id));
+    // May be called from a background thread; marshal to the main thread
+    QString qid = QString::fromStdString(task_id);
+    QMetaObject::invokeMethod(m_Widget, [=]() {
+      m_Widget->finishTask(qid);
+    }, Qt::QueuedConnection);
   }
 
 private:
@@ -152,6 +169,10 @@ void PaintbrushToolPanel::SetModel(PaintbrushSettingsModel *model)
   auto *dls = m_Model->GetParentModel()->GetDeepLearningSegmentationModel();
   makeCoupling(ui->outDLStatus, dls->GetServerStatusModel(), MiniConnectionStatusQLabelValueTraits());
 
+  // Listen for async interaction start/complete events to lock/unlock the UI
+  connectITK(dls, DeepLearningSegmentationModel::InteractionStartedEvent());
+  connectITK(dls, DeepLearningSegmentationModel::InteractionCompletedEvent());
+
   // The listing of DL models should be deactivated when there are no available models
   QtCouplingOptions opts_dl(QtCouplingOptions::DEACTIVATE_WHEN_INVALID);
   makeCoupling(ui->inDLPipeline, model->GetDeepLearningPipelineModel(), opts_dl);
@@ -180,6 +201,12 @@ PaintbrushToolPanel::onModelUpdate(const EventBucket &bucket)
       }
     }
   }
+
+  // Disable/enable the DLS settings panel while an async interaction is running
+  if(bucket.HasEvent(DeepLearningSegmentationModel::InteractionStartedEvent()))
+    ui->grpDeepLearning->setEnabled(false);
+  if(bucket.HasEvent(DeepLearningSegmentationModel::InteractionCompletedEvent()))
+    ui->grpDeepLearning->setEnabled(true);
 }
 
 void PaintbrushToolPanel::on_actionBrushStyle_triggered()

@@ -235,15 +235,18 @@ PaintbrushModel::CommitDrawing()
   {
     // Get the model
     auto *model = m_Parent->GetParentUI()->GetDeepLearningSegmentationModel();
+
+    // Do not start a second interaction while one is already running
+    if(model->IsInteractionInProgress())
+      return;
+
     auto *img = m_Parent->GetDriver()->GetCurrentImageData()->GetMain();
 
     // Undo the drawing we just did. But there is a chance that the drawing produced nothing in
     // which case for now we just ignore it
     seg->StoreUndoPoint("Temporary undo point");
     if(!seg->IsUndoPossible())
-    {
       return;
-    }
 
     seg->Undo();
     auto &commit = seg->GetUndoManager()->PeekCommit(seg->GetUndoManager()->GetNumberOfCommits() - 1);
@@ -251,13 +254,23 @@ PaintbrushModel::CommitDrawing()
     // Get the remote model properties
     auto dl_model_props = model->GetRemotePipelines()[pbs.dl_pipeline_id];
 
+    // Completion callback: runs on the main thread after the REST call finishes.
+    // SegmentationChangeEvent is already fired inside UpdateSegmentation().
+    auto on_complete = [driver](bool success) {
+      if(success)
+      {
+        driver->GetSelectedSegmentationLayer()->StoreUndoPoint("Drawing with paintbrush");
+        driver->RecordCurrentLabelUse();
+      }
+    };
+
     // If only one delta, then treat it as a point interaction; also treat as point interaction if the model
     // does not support scribble interactions, although in this case, we might want to consider sending a
     // multi-point interaction
-    bool rc = false;
     if((commit.GetDeltas().size() == 1 && m_MouseInside) || !dl_model_props.supports_scribble)
     {
-      rc = model->PerformPointInteraction(pbs.dl_pipeline_id, img, m_Parent->GetId(), m_MousePosition, m_ReverseMode);
+      model->AsyncPerformPointInteraction(
+        pbs.dl_pipeline_id, img, m_Parent->GetId(), m_MousePosition, m_ReverseMode, on_complete);
     }
     else if(commit.GetDeltas().size() > 1)
     {
@@ -268,12 +281,16 @@ PaintbrushModel::CommitDrawing()
       auto counts = seg->GenerateImageForRedo(commit, img_delta, gs->GetDrawingColorLabel());
       w_delta->PixelsModified();
 
-      model->PerformScribbleInteraction(pbs.dl_pipeline_id, img, m_Parent->GetId(), w_delta, counts.n_background > counts.n_foreground);
+      model->AsyncPerformScribbleInteraction(
+        pbs.dl_pipeline_id, img, m_Parent->GetId(), w_delta,
+        counts.n_background > counts.n_foreground, on_complete);
     }
 
+    // Return immediately — on_complete handles StoreUndoPoint and RecordCurrentLabelUse
+    return;
   }
 
-  // We need to commit the drawing
+  // We need to commit the drawing (non-DLS path)
   driver->GetSelectedSegmentationLayer()->StoreUndoPoint("Drawing with paintbrush");
   driver->RecordCurrentLabelUse();
 

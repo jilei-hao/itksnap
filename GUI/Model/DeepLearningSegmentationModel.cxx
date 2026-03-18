@@ -788,9 +788,6 @@ DeepLearningSegmentationModel::SetSourceImage(const std::string &model_id, Image
 {
   std::lock_guard<std::mutex> guard(m_Mutex); // Prevent two threads doing IO at once
 
-  // Set waiting cursor for DLS operation
-  QtCursorOverride c(Qt::WaitCursor);
-  
   RESTClientType cli(m_RESTSharedData);
   cli.SetServerURL(GetActualServerURL().c_str());
 
@@ -1094,7 +1091,7 @@ DeepLearningSegmentationModel::UpdateSegmentation(const std::string &model_id,
         axis, to_double(m_ParentModel->GetDriver()->GetCursorPosition()));
 
       // Update the global segmentation
-      m_ParentModel->GetDriver()->UpdateSegmentationWithSliceDrawing(
+      unsigned int nChanged = m_ParentModel->GetDriver()->UpdateSegmentationWithSliceDrawing(
         result_img,
         seg->GetImageGeometry()->GetDisplayToImageTransform(axis),
         xSlice[2], false,
@@ -1147,9 +1144,6 @@ DeepLearningSegmentationModel::PerformPointInteraction(std::string       model_i
 
   std::lock_guard<std::mutex> guard(m_Mutex); // Prevent two threads doing IO at once
 
-  // Set waiting cursor for DLS operation
-  QtCursorOverride c(Qt::WaitCursor);
-  
   // Perform the drawing command
   Clock::time_point t0, t1, t2, t3;
   t0 = Clock::now();
@@ -1214,9 +1208,6 @@ DeepLearningSegmentationModel::PerformScribbleOrLassoInteraction(const char     
 
   std::lock_guard<std::mutex> guard(m_Mutex); // Prevent two threads doing IO at once
 
-  // Set waiting cursor for DLS operation
-  QtCursorOverride c(Qt::WaitCursor);
-
   // Create a multipart dataset with the segmentation
   RESTMultipartData mpd;
   std::string       gzip_buffer;
@@ -1258,6 +1249,217 @@ DeepLearningSegmentationModel::GetRemoteModelMetadata(const std::string &model_i
   if(it_mm == m_RemoteModelMetadata.end())
     throw IRISException("Requested model %s is not present on the server", model_id.c_str());
   return it_mm->second;
+}
+
+// -------------------------------------------------------------------------
+// Background-thread-safe interaction workers
+// These make the REST calls and return raw JSON; they do NOT call
+// UpdateSegmentation (which must run on the main thread).
+// -------------------------------------------------------------------------
+
+dls_model::InteractionResult
+DeepLearningSegmentationModel::DoPointInteractionBg(std::string       model_id,
+                                                    ImageWrapperBase *layer,
+                                                    int               axis,
+                                                    Vector3ui         pos,
+                                                    bool              reverse)
+{
+  dls_model::InteractionResult result;
+  result.model_id    = model_id;
+  result.axis        = axis;
+  result.commit_name = "nnInteractive point interaction";
+
+  try
+  {
+    this->SetSourceImage(model_id, layer, axis);
+    this->ResetInteractionsIfNeeded();
+
+    std::lock_guard<std::mutex> guard(m_Mutex);
+
+    Clock::time_point t0 = Clock::now();
+    RESTClientType cli(m_RESTSharedData);
+    cli.SetServerURL(GetActualServerURL().c_str());
+
+    ProgressTaskGuard task_tracker(m_ProgressDelegate, "Performing point interaction");
+    cli.SetProgressCallback(&task_tracker, &ProgressTaskGuard::ProgressCallback);
+
+    auto &model_metadata = GetRemoteModelMetadata(model_id);
+    bool  rc;
+    if(model_metadata.dimensions == 3)
+    {
+      rc = cli.Get("v2/process_point_interaction/%s?point=%d&point=%d&point=%d&foreground=%s",
+                   m_ActiveSession.c_str(), pos[0], pos[1], pos[2],
+                   reverse ? "false" : "true");
+    }
+    else
+    {
+      Vector3i spos = to_int(layer->MapImageCIndexToSliceCIndex(axis, to_double(pos) + Vector3d(0.5)));
+      rc = cli.Get("v2/process_point_interaction/%s?point=%d&point=%d&foreground=%s",
+                   m_ActiveSession.c_str(), spos[0], spos[1],
+                   reverse ? "false" : "true");
+    }
+    cli.RemoveProgressCallback();
+    std::cout << "*** COMPLETED POINT INTERACTION ***" << std::endl;
+
+    if(!rc)
+    {
+      std::cerr << "RESP:" << cli.GetOutput() << std::endl;
+      throw IRISException("Failed to send current coordinate to the server");
+    }
+    Clock::time_point t1 = Clock::now();
+    std::cout << "Interaction time: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms\n";
+
+    result.json_output = cli.GetOutput();
+    result.success     = true;
+  }
+  catch(std::exception &e)
+  {
+    result.error_message = e.what();
+  }
+  return result;
+}
+
+dls_model::InteractionResult
+DeepLearningSegmentationModel::DoScribbleInteractionBg(const char                *target_url,
+                                                       std::string                model_id,
+                                                       ImageWrapperBase          *layer,
+                                                       int                        axis,
+                                                       SmartPtr<LabelImageWrapper> seg,
+                                                       bool                       reverse)
+{
+  dls_model::InteractionResult result;
+  result.model_id    = model_id;
+  result.axis        = axis;
+  result.commit_name = "nnInteractive scribble interaction";
+
+  try
+  {
+    this->SetSourceImage(model_id, layer, axis);
+    this->ResetInteractionsIfNeeded();
+
+    std::lock_guard<std::mutex> guard(m_Mutex);
+
+    RESTMultipartData mpd;
+    std::string       gzip_buffer;
+
+    auto t0 = Clock::now();
+    using FloatImageType = typename ImageWrapperBase::FloatImageType;
+    FloatImageType *src = seg->CreateCastToFloatPipeline("DLSExport");
+    src->Update();
+    EncodeImage(mpd, src, gzip_buffer);
+    auto t1 = Clock::now();
+
+    auto       t2 = Clock::now();
+    RESTClientType cli(m_RESTSharedData);
+    cli.SetServerURL(GetActualServerURL().c_str());
+    if(!cli.PostMultipart(
+         "%s/%s?foreground=%s", &mpd, target_url, m_ActiveSession.c_str(), reverse ? "false" : "true"))
+    {
+      std::cerr << "RESP:" << cli.GetOutput() << std::endl;
+      throw IRISException("Failed to send current coordinate to the server");
+    }
+    auto t3 = Clock::now();
+    std::cout << "Encoding time: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms\n";
+    std::cout << "Interaction time: "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count() << " ms\n";
+
+    result.json_output = cli.GetOutput();
+    result.success     = true;
+  }
+  catch(std::exception &e)
+  {
+    result.error_message = e.what();
+  }
+  return result;
+}
+
+// -------------------------------------------------------------------------
+// Async launchers: dispatch background work via QtConcurrent, apply the
+// segmentation update on the main thread via QFutureWatcher::finished.
+// -------------------------------------------------------------------------
+
+void
+DeepLearningSegmentationModel::AsyncPerformPointInteraction(std::string                model_id,
+                                                            ImageWrapperBase          *layer,
+                                                            int                        axis,
+                                                            Vector3ui                  pos,
+                                                            bool                       reverse,
+                                                            std::function<void(bool)>  on_complete)
+{
+  m_InteractionInProgress = true;
+  this->InvokeEvent(InteractionStartedEvent());
+
+  using Result  = dls_model::InteractionResult;
+  QFuture<Result> future = QtConcurrent::run([=]() -> Result {
+    return DoPointInteractionBg(model_id, layer, axis, pos, reverse);
+  });
+
+  auto *watcher = new QFutureWatcher<Result>();
+  QObject::connect(watcher, &QFutureWatcherBase::finished, watcher, [=]() {
+    Result result = watcher->result();
+    watcher->deleteLater();
+    m_InteractionInProgress = false;
+    this->InvokeEvent(InteractionCompletedEvent());
+    if(result.success)
+    {
+      try
+      {
+        bool changed = this->UpdateSegmentation(
+          result.model_id, result.axis, result.json_output.c_str(), result.commit_name.c_str());
+        on_complete(changed);
+      }
+      catch(std::exception &e)
+      {
+        std::cerr << "DLS point interaction: UpdateSegmentation failed: " << e.what() << std::endl;
+        on_complete(false);
+      }
+    }
+    else
+    {
+      std::cerr << "DLS point interaction failed: " << result.error_message << std::endl;
+      on_complete(false);
+    }
+  });
+  watcher->setFuture(future);
+}
+
+void
+DeepLearningSegmentationModel::AsyncPerformScribbleInteraction(std::string                model_id,
+                                                               ImageWrapperBase          *layer,
+                                                               int                        axis,
+                                                               SmartPtr<LabelImageWrapper> seg,
+                                                               bool                       reverse,
+                                                               std::function<void(bool)>  on_complete)
+{
+  m_InteractionInProgress = true;
+  this->InvokeEvent(InteractionStartedEvent());
+
+  using Result  = dls_model::InteractionResult;
+  QFuture<Result> future = QtConcurrent::run([=]() -> Result {
+    return DoScribbleInteractionBg("process_scribble_interaction", model_id, layer, axis, seg, reverse);
+  });
+
+  auto *watcher = new QFutureWatcher<Result>();
+  QObject::connect(watcher, &QFutureWatcherBase::finished, watcher, [=]() {
+    Result result = watcher->result();
+    watcher->deleteLater();
+    m_InteractionInProgress = false;
+    this->InvokeEvent(InteractionCompletedEvent());
+    if(result.success)
+    {
+      bool changed = this->UpdateSegmentation(
+        result.model_id, result.axis, result.json_output.c_str(), result.commit_name.c_str());
+      on_complete(changed);
+    }
+    else
+    {
+      std::cerr << "DLS scribble interaction failed: " << result.error_message << std::endl;
+      on_complete(false);
+    }
+  });
+  watcher->setFuture(future);
 }
 
 void
