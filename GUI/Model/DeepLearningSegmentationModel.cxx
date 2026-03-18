@@ -1353,12 +1353,15 @@ DeepLearningSegmentationModel::DoScribbleInteractionBg(const char               
     auto       t2 = Clock::now();
     RESTClientType cli(m_RESTSharedData);
     cli.SetServerURL(GetActualServerURL().c_str());
+    ProgressTaskGuard task_tracker(m_ProgressDelegate, "Performing scribble interaction");
+    cli.SetProgressCallback(&task_tracker, &ProgressTaskGuard::ProgressCallback);
     if(!cli.PostMultipart(
          "%s/%s?foreground=%s", &mpd, target_url, m_ActiveSession.c_str(), reverse ? "false" : "true"))
     {
       std::cerr << "RESP:" << cli.GetOutput() << std::endl;
       throw IRISException("Failed to send current coordinate to the server");
     }
+    cli.RemoveProgressCallback();
     auto t3 = Clock::now();
     std::cout << "Encoding time: "
               << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count() << " ms\n";
