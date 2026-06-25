@@ -1272,12 +1272,19 @@ set_target_properties(${SNAP_BUNDLE_NAME} PROPERTIES INSTALL_RPATH_USE_LINK_PATH
 
 set(QT_I18N_TRANSLATED_LANGUAGES de es zh_CN)
 string(JOIN " " QT_I18N_TRANSLATED_LANGUAGES_STRING ${QT_I18N_TRANSLATED_LANGUAGES})
-qt_add_translations(
-  TARGETS ${SNAP_BUNDLE_NAME}
-  SOURCE_TARGETS itksnapui_qt ${SNAP_BUNDLE_NAME}
-  TS_FILE_DIR GUI/Qt/Translations
-  TS_FILE_BASE itksnap
-)
+# The TARGETS/SOURCE_TARGETS/TS_FILE_DIR/TS_FILE_BASE signature of
+# qt_add_translations() requires Qt >= 6.7. Older Qt (e.g. distro-packaged 6.4)
+# can still build the application, just without bundled UI translations.
+if(QTVERSION VERSION_GREATER_EQUAL "6.7")
+  qt_add_translations(
+    TARGETS ${SNAP_BUNDLE_NAME}
+    SOURCE_TARGETS itksnapui_qt ${SNAP_BUNDLE_NAME}
+    TS_FILE_DIR GUI/Qt/Translations
+    TS_FILE_BASE itksnap
+  )
+else()
+  message(STATUS "Qt ${QTVERSION} < 6.7: skipping qt_add_translations (UI translations will not be bundled)")
+endif()
 
 #--------------------------------------------------------------------------------
 # Testing-related executables
@@ -1722,22 +1729,29 @@ ELSE()
   # Use Qt deployment script to take care of plugins
   set(executable_path "${SNAP_MAIN_INSTALL_DIR}/${SNAP_BUNDLE_NAME}")
 
-  qt_generate_deploy_script(
-      TARGET ${SNAP_BUNDLE_NAME}
-      OUTPUT_SCRIPT deploy_script
-      CONTENT "
-  qt_deploy_runtime_dependencies(
-      EXECUTABLE \"${executable_path}\"
-      GENERATE_QT_CONF
-      LIB_DIR \"${SNAP_MAIN_INSTALL_DIR}\"
-      PLUGINS_DIR \"${SNAP_MAIN_INSTALL_DIR}\"
-      VERBOSE
-  )
-  qt_deploy_translations(
-      CATALOGS qtbase
-      LOCALES ${QT_I18N_TRANSLATED_LANGUAGES_STRING}
-  )")
-  install(SCRIPT ${deploy_script})
+  # qt_generate_deploy_script() / qt_deploy_*() require Qt >= 6.5. These only run
+  # at `install`/CPack time to bundle Qt libs+plugins; an in-place developer build
+  # does not need them. Guard so older Qt (e.g. distro-packaged 6.4) can configure.
+  if(QTVERSION VERSION_GREATER_EQUAL "6.5")
+    qt_generate_deploy_script(
+        TARGET ${SNAP_BUNDLE_NAME}
+        OUTPUT_SCRIPT deploy_script
+        CONTENT "
+    qt_deploy_runtime_dependencies(
+        EXECUTABLE \"${executable_path}\"
+        GENERATE_QT_CONF
+        LIB_DIR \"${SNAP_MAIN_INSTALL_DIR}\"
+        PLUGINS_DIR \"${SNAP_MAIN_INSTALL_DIR}\"
+        VERBOSE
+    )
+    qt_deploy_translations(
+        CATALOGS qtbase
+        LOCALES ${QT_I18N_TRANSLATED_LANGUAGES_STRING}
+    )")
+    install(SCRIPT ${deploy_script})
+  else()
+    message(STATUS "Qt ${QTVERSION} < 6.5: skipping qt_generate_deploy_script (no Qt deploy at install time)")
+  endif()
 
 ENDIF()
 
