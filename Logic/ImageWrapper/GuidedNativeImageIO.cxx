@@ -85,6 +85,9 @@
 #include <iomanip>
 #include <type_traits>
 #include <vector>
+#include <cmath>
+#include <cctype>
+#include "itkMetaDataObject.h"
 
 // Platform-specific headers for available memory query (used in image size check)
 #if defined(__APPLE__)
@@ -98,6 +101,116 @@
 
 
 using namespace std;
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Cardiac 4D (4D CTA) phase-axis metadata.
+//
+// The cardiac phase axis (%R-R per time point) is carried through the in-memory
+// image via the ITK MetaDataDictionary, using the namespaced string keys below.
+// The dictionary already flows read -> ImageWrapper::m_Image4D (the scalar cast
+// copies it) and is the format-agnostic carrier consumed by the writers
+// (e.g. SaveNrrdSequence). Keys are plain identifiers (no spaces, no "gggg|eeee"
+// shape) so they never collide with DICOM tag keys and round-trip cleanly as
+// NRRD "key:=value" fields.
+// ---------------------------------------------------------------------------
+const char *ITKSNAP_CARDIAC_RR_PERCENT = "ITKSNAP_Cardiac_RRPercent";   // space-sep %R-R, one per time point
+const char *ITKSNAP_CARDIAC_RR_SOURCE  = "ITKSNAP_Cardiac_RRPercentSource"; // "series_description" | "none"
+const char *ITKSNAP_CARDIAC_RR_EXACT   = "ITKSNAP_Cardiac_RRPercentExact";  // "1" if uniform integer step, else "0"
+const char *ITKSNAP_CARDIAC_NUM_PHASES = "ITKSNAP_Cardiac_NumberOfPhases";  // number of time points
+
+// Derived cardiac phase axis. rr_percent is empty when the range could not be
+// recovered (source == "none"), in which case the temporal axis falls back to
+// the historical 0.05 cardiac-cycle-fraction step.
+struct CardiacPhaseAxis
+{
+  std::vector<double> rr_percent;     // %R-R per phase (empty if unknown)
+  bool                exact = false;  // true when the step is a clean integer %
+  double              start_fraction = 0.0;   // origin of the time axis (cycle fraction)
+  double              step_fraction  = 0.05;  // spacing of the time axis (cycle fraction)
+  std::string         source = "none";
+};
+
+// Parse a "<start> - <end> %" range out of a DICOM SeriesDescription such as
+// "Func DS_CorCTA 0.5 Bv36 4  0 - 95 %", "DS_CORCTA_FUNC_5 - 95 %_0.75", or
+// "DS_CORCTA_FUNC_0-95%". Anchors on the last '%' and reads the two numbers
+// preceding it, so unrelated numbers earlier in the string are ignored.
+bool ParseCardiacRRRange(const std::string &desc, double &start, double &end)
+{
+  std::size_t pct = desc.rfind('%');
+  if (pct == std::string::npos || pct == 0)
+    return false;
+
+  long i = static_cast<long>(pct) - 1;
+  auto skipBlanks = [&](long &k) { while (k >= 0 && (desc[k] == ' ' || desc[k] == '\t')) --k; };
+  auto readNumberBackward = [&](long &k, double &val) -> bool
+    {
+    long e = k;
+    while (k >= 0 && (std::isdigit(static_cast<unsigned char>(desc[k])) || desc[k] == '.')) --k;
+    long s = k + 1;
+    if (s > e) return false;
+    try { val = std::stod(desc.substr(s, e - s + 1)); }
+    catch (...) { return false; }
+    return true;
+    };
+
+  skipBlanks(i);
+  if (!readNumberBackward(i, end)) return false;
+  skipBlanks(i);
+  if (i < 0 || desc[i] != '-') return false;
+  --i;
+  skipBlanks(i);
+  if (!readNumberBackward(i, start)) return false;
+
+  return end >= start;
+}
+
+// Derive the cardiac phase axis from the SeriesDescription range and the number
+// of phases. For n phases the %R-R values are linspace(start, end, n).
+CardiacPhaseAxis DeriveCardiacPhaseAxis(const std::string &seriesDesc, unsigned int nPhases)
+{
+  CardiacPhaseAxis axis;
+  double start = 0.0, end = 0.0;
+  if (nPhases == 0 || !ParseCardiacRRRange(seriesDesc, start, end))
+    return axis;  // source == "none", fallback temporal axis
+
+  axis.source = "series_description";
+  double step = (nPhases > 1) ? (end - start) / (nPhases - 1) : 0.0;
+  axis.rr_percent.resize(nPhases);
+  for (unsigned int k = 0; k < nPhases; ++k)
+    axis.rr_percent[k] = start + k * step;
+
+  axis.exact = (nPhases <= 1) || (std::fabs(step - std::round(step)) < 1e-6);
+  axis.start_fraction = start / 100.0;
+  axis.step_fraction  = (nPhases > 1) ? (step / 100.0) : 0.05;
+  return axis;
+}
+
+// Join doubles into a compact space-separated string ("0 5 10 ... 95").
+std::string JoinDoubles(const std::vector<double> &v)
+{
+  std::ostringstream ss;
+  ss << std::setprecision(10);
+  for (std::size_t i = 0; i < v.size(); ++i)
+    {
+    if (i) ss << ' ';
+    ss << v[i];
+    }
+  return ss.str();
+}
+
+// Parse a space-separated list of doubles (inverse of JoinDoubles).
+std::vector<double> ParseDoubleList(const std::string &s)
+{
+  std::vector<double> out;
+  std::istringstream ss(s);
+  double v;
+  while (ss >> v) out.push_back(v);
+  return out;
+}
+
+} // anonymous namespace
 
 bool GuidedNativeImageIO::m_StaticDataInitialized = false;
 
@@ -1132,6 +1245,20 @@ GuidedNativeImageIO
 			progSrc->AddProgress(readingDelta);
 			}
 
+		// Derive the cardiac phase axis (%R-R per time point) from the series.
+		// The %R-R range is encoded in the SeriesDescription (e.g. "... 0 - 95 %");
+		// combined with the number of phases it gives one %R-R value per frame.
+		// This replaces the previously hardcoded 50 ms temporal spacing and is
+		// carried forward (below) via the image MetaDataDictionary.
+		std::string seriesDesc;
+		{
+		const typename SeriesReaderType::DictionaryArrayType *descArr =
+			reader->GetMetaDataDictionaryArray();
+		if (descArr && descArr->size() > 0)
+			itk::ExposeMetaData<std::string>(*((*descArr)[0]), "0008|103e", seriesDesc);
+		}
+		CardiacPhaseAxis cardiacAxis = DeriveCardiacPhaseAxis(seriesDesc, frameContainer.size());
+
 		// assemble 3d images into the 4d native image
 		// -- set first 3 dimensions
 		typename GreyImage4DType::PointType origin4d;
@@ -1151,7 +1278,7 @@ GuidedNativeImageIO
 			region4d.SetSize(i, first3dImg->GetLargestPossibleRegion().GetSize()[i]);
 			}
 
-		origin4d[3] = 0;
+		origin4d[3] = cardiacAxis.start_fraction;
 
 		// Flip all image to RAS
 		if (first3dImg->GetDirection()(2,2) == 1)
@@ -1162,7 +1289,9 @@ GuidedNativeImageIO
 		direction4d(2,3) = 0;
 		direction4d(3,3) = 1;
 
-		spacing4d[3] = 0.05; // hardcode 50ms for now, should be extracted from the images
+		// Temporal spacing as a cardiac-cycle fraction (step between %R-R values).
+		// Falls back to 0.05 when the %R-R range could not be recovered.
+		spacing4d[3] = cardiacAxis.step_fraction;
 
 		// region Corner Index: [x, x, x, 0], Size: [x, x, x, nt]
 		region4d.SetIndex(3, 0);
@@ -1207,6 +1336,24 @@ GuidedNativeImageIO
 			reader->GetMetaDataDictionaryArray();
 		if(darr->size() > 0)
 			m_NativeImage->SetMetaDataDictionary(*((*darr)[0]));
+
+		// Store the derived cardiac phase axis into the image dictionary so it is
+		// carried through to the ImageWrapper and out to the writers (seq.nrrd /
+		// nrrd). Done after SetMetaDataDictionary so it is not overwritten.
+		{
+		itk::MetaDataDictionary &dict = m_NativeImage->GetMetaDataDictionary();
+		itk::EncapsulateMetaData<std::string>(
+			dict, ITKSNAP_CARDIAC_NUM_PHASES, std::to_string(frameContainer.size()));
+		if (!cardiacAxis.rr_percent.empty())
+			{
+			itk::EncapsulateMetaData<std::string>(
+				dict, ITKSNAP_CARDIAC_RR_PERCENT, JoinDoubles(cardiacAxis.rr_percent));
+			itk::EncapsulateMetaData<std::string>(
+				dict, ITKSNAP_CARDIAC_RR_SOURCE, cardiacAxis.source);
+			itk::EncapsulateMetaData<std::string>(
+				dict, ITKSNAP_CARDIAC_RR_EXACT, cardiacAxis.exact ? "1" : "0");
+			}
+		}
 
 		progSrc->AddProgress(weightMisc);
 		progSrc->EndProgress();
@@ -1589,12 +1736,34 @@ GuidedNativeImageIO
   union { uint16_t i; uint8_t c[2]; } bint = {0x0102};
   const char *endian = (bint.c[0] == 0x01) ? "big" : "little";
 
-  // Build axis-0 index values: 0 1 2 ... T-1
+  // Build the axis-0 (frame) index values. Prefer the cardiac %R-R axis carried
+  // in the image MetaDataDictionary; fall back to plain ordinals 0..T-1 when it
+  // is absent or its length does not match the number of frames.
+  const itk::MetaDataDictionary &dict = image->GetMetaDataDictionary();
+  std::string rrStr, rrSource, rrExact;
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_PERCENT, rrStr);
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_SOURCE, rrSource);
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_EXACT, rrExact);
+  std::vector<double> rr = ParseDoubleList(rrStr);
+  const bool haveRR = (rr.size() == static_cast<std::size_t>(T));
+
   std::ostringstream axisIdxValues;
-  for (long t = 0; t < T; ++t)
+  if (haveRR)
     {
-    if (t > 0) axisIdxValues << ' ';
-    axisIdxValues << t;
+    axisIdxValues << std::setprecision(10);
+    for (long t = 0; t < T; ++t)
+      {
+      if (t > 0) axisIdxValues << ' ';
+      axisIdxValues << rr[(std::size_t)t];
+      }
+    }
+  else
+    {
+    for (long t = 0; t < T; ++t)
+      {
+      if (t > 0) axisIdxValues << ' ';
+      axisIdxValues << t;
+      }
     }
 
   // Open file for binary writing
@@ -1627,11 +1796,19 @@ GuidedNativeImageIO
   f << "kinds: list domain domain domain\n";
   f << "endian: " << endian << "\n";
   f << "encoding: raw\n";
-  f << "labels: \"frame\" \"\" \"\" \"\"\n";
+  f << "labels: " << (haveRR ? "\"%R-R\"" : "\"frame\"") << " \"\" \"\" \"\"\n";
   f << "space origin: " << fmt3(origin[0], origin[1], origin[2]) << "\n";
   f << "measurement frame: (1,0,0) (0,1,0) (0,0,1)\n";
   f << "axis 0 index type:=numeric\n";
   f << "axis 0 index values:=" << axisIdxValues.str() << "\n";
+  if (haveRR)
+    {
+    // Cardiac phase axis metadata (round-trips as NRRD key:=value fields).
+    f << "axis 0 index units:=%\n";
+    f << ITKSNAP_CARDIAC_RR_PERCENT << ":=" << rrStr << "\n";
+    if (!rrSource.empty()) f << ITKSNAP_CARDIAC_RR_SOURCE << ":=" << rrSource << "\n";
+    if (!rrExact.empty())  f << ITKSNAP_CARDIAC_RR_EXACT  << ":=" << rrExact << "\n";
+    }
   f << "\n"; // blank line ends NRRD header
 
   // Write raw pixel data
