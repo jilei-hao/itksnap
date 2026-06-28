@@ -87,6 +87,7 @@
 #include <vector>
 #include <cmath>
 #include <cctype>
+#include <cstring>
 #include "itkMetaDataObject.h"
 
 // Platform-specific headers for available memory query (used in image size check)
@@ -208,6 +209,55 @@ std::vector<double> ParseDoubleList(const std::string &s)
   double v;
   while (ss >> v) out.push_back(v);
   return out;
+}
+
+// Replace a known NIfTI image extension with ".json" to form the sidecar path
+// (foo.nii.gz -> foo.json). Falls back to appending ".json".
+std::string NiftiSidecarPath(const std::string &imagePath)
+{
+  static const char *exts[] = { ".nii.gz", ".nia.gz", ".nii", ".nia" };
+  for (const char *e : exts)
+    {
+    std::size_t n = std::strlen(e), L = imagePath.size();
+    if (L >= n && imagePath.compare(L - n, n, e) == 0)
+      return imagePath.substr(0, L - n) + ".json";
+    }
+  return imagePath + ".json";
+}
+
+// Write a JSON sidecar carrying the cardiac %R-R axis next to a NIfTI image.
+// NIfTI's header has no per-frame list, so the sidecar is the authoritative
+// record of the (possibly non-uniform) %R-R values. No-op if the image carries
+// no cardiac axis. Returns the sidecar path written, or "" if none.
+std::string WriteCardiacJsonSidecar(const std::string &imagePath,
+                                    const itk::MetaDataDictionary &dict)
+{
+  std::string rrStr, source, exact, nphases;
+  if (!itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_PERCENT, rrStr) || rrStr.empty())
+    return std::string();
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_SOURCE, source);
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_EXACT, exact);
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_NUM_PHASES, nphases);
+
+  std::vector<double> rr = ParseDoubleList(rrStr);
+  std::ostringstream js;
+  js << std::setprecision(10);
+  js << "{\n";
+  js << "  \"PhaseAxis\": \"cardiac_RR_percent\",\n";
+  js << "  \"Unit\": \"%\",\n";
+  if (!source.empty())  js << "  \"Source\": \"" << source << "\",\n";
+  if (!exact.empty())   js << "  \"Exact\": " << (exact == "1" ? "true" : "false") << ",\n";
+  if (!nphases.empty()) js << "  \"NumberOfFrames\": " << nphases << ",\n";
+  js << "  \"RRPercent\": [";
+  for (std::size_t i = 0; i < rr.size(); ++i) { if (i) js << ", "; js << rr[i]; }
+  js << "]\n}\n";
+
+  std::string sidecar = NiftiSidecarPath(imagePath);
+  std::ofstream f(sidecar.c_str());
+  if (!f.is_open())
+    return std::string();
+  f << js.str();
+  return sidecar;
 }
 
 } // anonymous namespace
@@ -1886,6 +1936,12 @@ GuidedNativeImageIO
     writer->SetImageIO(m_IOBase);
   writer->SetInput(image);
   writer->Update();
+
+  // NIfTI cannot store a per-frame %R-R list in its header (only the uniform
+  // pixdim[4]/toffset already set from the 4D geometry). When the image carries
+  // a cardiac axis, also write a JSON sidecar with the authoritative %R-R array.
+  if (m_FileFormat == FORMAT_NIFTI || m_FileFormat == FORMAT_ANALYZE)
+    WriteCardiacJsonSidecar(FileName, image->GetMetaDataDictionary());
 }
 
 
