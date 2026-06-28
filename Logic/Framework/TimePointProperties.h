@@ -6,6 +6,8 @@
 #include "itkDataObject.h"
 #include "itkObjectFactory.h"
 #include "TagList.h"
+#include <cmath>
+#include <limits>
 
 
 class Registry;
@@ -41,6 +43,28 @@ public:
 		Tags = tlist;
 	}
 
+	/** Cardiac phase of this time point, as a percentage of the R-R interval.
+	 *  NaN when unknown (e.g. the image is not a gated cardiac series). */
+	double GetRRPercent() const
+	{ return RRPercent; }
+
+	bool HasRRPercent() const
+	{ return !std::isnan(RRPercent); }
+
+	void SetRRPercent(double rr)
+	{
+		RRPercent = rr;
+		InvokeEvent(WrapperGlobalMetadataChangeEvent());
+	}
+
+	/** Whether the %R-R value is an exact (clean integer-step) recon phase, as
+	 *  opposed to an approximate value derived from an ambiguous label. */
+	bool GetRRPercentExact() const
+	{ return RRPercentExact; }
+
+	void SetRRPercentExact(bool exact)
+	{ RRPercentExact = exact; }
+
 protected:
 	TimePointProperty() {};
 	virtual ~TimePointProperty() {}
@@ -48,6 +72,8 @@ protected:
 private:
   std::string Nickname;
   TagList Tags;
+  double RRPercent = std::numeric_limits<double>::quiet_NaN();
+  bool RRPercentExact = false;
 };
 
 class TimePointProperties : public itk::DataObject
