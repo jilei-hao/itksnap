@@ -88,6 +88,7 @@
 #include <cmath>
 #include <cctype>
 #include <cstring>
+#include <set>
 #include "itkMetaDataObject.h"
 
 // Platform-specific headers for available memory query (used in image size check)
@@ -258,6 +259,93 @@ std::string WriteCardiacJsonSidecar(const std::string &imagePath,
     return std::string();
   f << js.str();
   return sidecar;
+}
+
+// ---------------------------------------------------------------------------
+// Non-PHI metadata curation for export (requirement 2).
+//
+// A DICOM-sourced image carries the full DICOM dictionary, which ITK's NRRD /
+// MetaImage writers serialize verbatim — leaking PHI (patient name/ID 0010|*,
+// dates) on non-de-identified data. On export we replace it with a curated
+// allow-list of research-relevant, non-PHI public tags (+ our ITKSNAP_* keys),
+// and top-code age >=90 per HIPAA Safe Harbor. Allow-list (not deny-list) so an
+// unenumerated or private/free-text tag can never slip through. See
+// projects/4dcta_improvement/metadata_reference.md for the rationale.
+// ---------------------------------------------------------------------------
+const std::set<std::string> & CardiacExportKeepKeys()
+{
+  static const std::set<std::string> keep = {
+    // modality / scanner
+    "0008|0008","0008|0016","0008|0060","0008|0070","0008|1090","0018|1020",
+    // protocol / acquisition
+    "0008|103e","0018|0015","0018|0022","0018|1030","0018|1210","0018|5100",
+    // CT technique
+    "0018|0050","0018|0060","0018|0088","0018|1120","0018|1150","0018|1151",
+    "0018|1152","0018|9311",
+    // cardiac timing
+    "0018|1060","0018|1062","0018|1081","0018|1082","0018|1088","0018|1090",
+    "0020|9153","0020|9241",
+    // geometry / indices
+    "0020|0011","0020|0012","0020|0013","0020|0032","0020|0037","0020|1041",
+    "0028|0030",
+    // intensity calibration
+    "0028|1050","0028|1051","0028|1052","0028|1053","0028|1054",
+    // pixel format
+    "0028|0002","0028|0004","0028|0010","0028|0011","0028|0100","0028|0101",
+    "0028|0103",
+    // research covariates (HIPAA: sex/size/weight non-identifiers; age top-coded)
+    "0010|0040","0010|1010","0010|1020","0010|1022","0010|1030",
+    // de-identification provenance + pseudonymous hierarchy UIDs
+    "0012|0062","0012|0063","0020|000d","0020|000e","0020|0052",
+  };
+  return keep;
+}
+
+// True if a dictionary key has the DICOM "gggg|eeee" shape.
+bool LooksLikeDicomKey(const std::string &k)
+{
+  if (k.size() != 9 || k[4] != '|') return false;
+  for (std::size_t i = 0; i < k.size(); ++i)
+    if (i != 4 && !std::isxdigit(static_cast<unsigned char>(k[i]))) return false;
+  return true;
+}
+
+// HIPAA Safe Harbor: ages over 89 must be aggregated to "90 or older".
+// DICOM Age String is "nnnY"/"nnnM"/"nnnW"/"nnnD"; only years can reach 90.
+std::string TopCodeAge(const std::string &age)
+{
+  if (age.size() >= 4 && (age[3] == 'Y' || age[3] == 'y'))
+    {
+    try { if (std::stoi(age.substr(0, 3)) >= 90) return "090Y"; }
+    catch (...) {}
+    }
+  return age;
+}
+
+// Curate a DICOM-sourced dictionary for export. No-op (returns src) when the
+// dictionary is not DICOM-shaped, so custom keys on non-DICOM images survive.
+itk::MetaDataDictionary CurateDicomDictionaryForExport(const itk::MetaDataDictionary &src)
+{
+  std::vector<std::string> keys = src.GetKeys();
+  bool hasDicom = false;
+  for (const auto &k : keys) if (LooksLikeDicomKey(k)) { hasDicom = true; break; }
+  if (!hasDicom) return src;
+
+  const std::set<std::string> &keep = CardiacExportKeepKeys();
+  itk::MetaDataDictionary out;
+  for (const auto &k : keys)
+    {
+    const bool isItksnap = (k.rfind("ITKSNAP_", 0) == 0);
+    if (!isItksnap && keep.find(k) == keep.end())
+      continue;
+    std::string v;
+    if (!itk::ExposeMetaData<std::string>(src, k, v))
+      continue; // skip non-string entries (DICOM/GDCM values are strings)
+    if (k == "0010|1010")
+      v = TopCodeAge(v);
+    itk::EncapsulateMetaData<std::string>(out, k, v);
+    }
+  return out;
 }
 
 } // anonymous namespace
@@ -1927,6 +2015,14 @@ GuidedNativeImageIO
       }
     }
 
+  // Curate metadata for export: writers that serialize the dictionary (NRRD,
+  // MetaImage) would otherwise leak the full DICOM dict (PHI). Swap in a
+  // curated, non-PHI allow-list for the write, then restore the in-memory dict
+  // (curation is export-only; the inspector keeps full fidelity). No-op for
+  // non-DICOM dictionaries.
+  itk::MetaDataDictionary savedDict = image->GetMetaDataDictionary();
+  image->SetMetaDataDictionary(CurateDicomDictionaryForExport(savedDict));
+
   // Save the image
   typedef itk::ImageFileWriter<TImageType> WriterType;
   typename WriterType::Pointer writer = WriterType::New();
@@ -1937,11 +2033,14 @@ GuidedNativeImageIO
   writer->SetInput(image);
   writer->Update();
 
+  // Restore the original in-memory dictionary.
+  image->SetMetaDataDictionary(savedDict);
+
   // NIfTI cannot store a per-frame %R-R list in its header (only the uniform
-  // pixdim[4]/toffset already set from the 4D geometry). When the image carries
-  // a cardiac axis, also write a JSON sidecar with the authoritative %R-R array.
+  // pixdim[4] already set from the 4D geometry). When the image carries a
+  // cardiac axis, also write a JSON sidecar with the authoritative %R-R array.
   if (m_FileFormat == FORMAT_NIFTI || m_FileFormat == FORMAT_ANALYZE)
-    WriteCardiacJsonSidecar(FileName, image->GetMetaDataDictionary());
+    WriteCardiacJsonSidecar(FileName, savedDict);
 }
 
 
