@@ -892,6 +892,23 @@ font-size:11px;
          <item row="0" column="1">
           <widget class="QLineEdit" name="inTPNickname"/>
          </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="lblTPCardiacPhase">
+           <property name="text">
+            <string>Cardiac phase:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QLineEdit" name="inTPCardiacPhase">
+           <property name="readOnly">
+            <bool>true</bool>
+           </property>
+           <property name="toolTip">
+            <string>Cardiac phase (%R-R) of the current time point, for 4D gated series</string>
+           </property>
+          </widget>
+         </item>
         </layout>
        </widget>
       </item>
