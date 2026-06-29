@@ -1944,6 +1944,7 @@ GuidedNativeImageIO
     // Cardiac phase axis metadata (round-trips as NRRD key:=value fields).
     f << "axis 0 index units:=%\n";
     f << ITKSNAP_CARDIAC_RR_PERCENT << ":=" << rrStr << "\n";
+    f << ITKSNAP_CARDIAC_NUM_PHASES << ":=" << rr.size() << "\n";
     if (!rrSource.empty()) f << ITKSNAP_CARDIAC_RR_SOURCE << ":=" << rrSource << "\n";
     if (!rrExact.empty())  f << ITKSNAP_CARDIAC_RR_EXACT  << ":=" << rrExact << "\n";
     }
