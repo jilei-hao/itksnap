@@ -122,6 +122,15 @@ const char *ITKSNAP_CARDIAC_RR_SOURCE  = "ITKSNAP_Cardiac_RRPercentSource"; // "
 const char *ITKSNAP_CARDIAC_RR_EXACT   = "ITKSNAP_Cardiac_RRPercentExact";  // "1" if uniform integer step, else "0"
 const char *ITKSNAP_CARDIAC_NUM_PHASES = "ITKSNAP_Cardiac_NumberOfPhases";  // number of time points
 
+// Generic per-time-point frame axis, modality-agnostic: one labeled value per
+// time point with a unit. 4D CTA fills it with %R-R (unit "%"); 4D echo fills it
+// with elapsed frame time (unit "ms"). The writers/GUI consume these so both
+// modalities are handled uniformly; the ITKSNAP_Cardiac_* keys above remain as
+// CT-specific provenance.
+const char *ITKSNAP_FRAME_AXIS_VALUES = "ITKSNAP_FrameAxis_Values"; // space-sep, one per time point
+const char *ITKSNAP_FRAME_AXIS_UNIT   = "ITKSNAP_FrameAxis_Unit";   // e.g. "%" or "ms"
+const char *ITKSNAP_FRAME_AXIS_LABEL  = "ITKSNAP_FrameAxis_Label";  // e.g. "%R-R" or "time"
+
 // Derived cardiac phase axis. rr_percent is empty when the range could not be
 // recovered (source == "none"), in which case the temporal axis falls back to
 // the historical 0.05 cardiac-cycle-fraction step.
@@ -285,6 +294,9 @@ const std::set<std::string> & CardiacExportKeepKeys()
     // cardiac timing
     "0018|1060","0018|1062","0018|1081","0018|1082","0018|1088","0018|1090",
     "0020|9153","0020|9241",
+    // 4D echo / ultrasound (cine + cartesian calibration)
+    "0018|0040","0018|1063","0018|1242","0008|2144","0018|602c","0018|602e",
+    "0018|6024","0018|6026","0018|5010",
     // geometry / indices
     "0020|0011","0020|0012","0020|0013","0020|0032","0020|0037","0020|1041",
     "0028|0030",
@@ -865,19 +877,18 @@ GuidedNativeImageIO
 			gdcm::StringFilter sf;
 			sf.SetFile(file);
 
-			std::vector<double> ecd_spc;
-			try
+			// Parse each spacing tag independently with a safe fallback, so a missing
+			// or malformed tag cannot leave the vector short (which would make the
+			// SetSpacing loop below read out of bounds). In-plane/Z deltas are in cm
+			// (x10 -> mm); frame time is in ms (the time-axis spacing).
+			auto parseScaled = [&](const gdcm::Tag &t, double scale) -> double
 				{
-				ecd_spc.push_back(std::stod(sf.ToString(deltaX)) * 10.0);
-				ecd_spc.push_back(std::stod(sf.ToString(deltaY)) * 10.0);
-				ecd_spc.push_back(std::stod(sf.ToString(deltaZ)) * 10.0);
-				// frame time is the spacing along the time axis
-				ecd_spc.push_back(std::stod(sf.ToString(frameTime)));
-				}
-			catch (const std::exception &e)
-				{
-				std::cerr << e.what() << std::endl;
-				}
+				try { return std::stod(sf.ToString(t)) * scale; }
+				catch (const std::exception &) { return 1.0; }
+				};
+			std::vector<double> ecd_spc = {
+				parseScaled(deltaX, 10.0), parseScaled(deltaY, 10.0),
+				parseScaled(deltaZ, 10.0), parseScaled(frameTime, 1.0) };
 
 			// Set to 4d
 			m_IOBase->SetNumberOfDimensions(4);
@@ -896,19 +907,17 @@ GuidedNativeImageIO
       m_IOBase->SetDirection(2, std::vector<double>{0.0, 0.0, -1.0, 0.0}); // S
 			m_IOBase->SetDirection(3, std::vector<double>{0.0, 0.0, 0.0, 1.0});
 
-			std::vector<itk::ImageIOBase::SizeType> ecd_dim(4);
+			std::vector<itk::ImageIOBase::SizeType> ecd_dim(4, 1);
 
-			try
+			auto parseDim = [&](const gdcm::Tag &t) -> itk::ImageIOBase::SizeType
 				{
-				ecd_dim[0] = stol(sf.ToString(width));
-				ecd_dim[1] = stol(sf.ToString(height));
-				ecd_dim[2] = stol(sf.ToString(depth));
-				ecd_dim[3] = stol(sf.ToString(numVolumes));
-				}
-			catch (std::exception &e)
-				{
-				std::cerr << e.what() << std::endl;
-				}
+				try { return (itk::ImageIOBase::SizeType) std::stol(sf.ToString(t)); }
+				catch (const std::exception &) { return 1; }
+				};
+			ecd_dim[0] = parseDim(width);
+			ecd_dim[1] = parseDim(height);
+			ecd_dim[2] = parseDim(depth);
+			ecd_dim[3] = parseDim(numVolumes);
 
 			for (unsigned int i = 0; i < 4; ++i)
 				{
@@ -1490,6 +1499,11 @@ GuidedNativeImageIO
 				dict, ITKSNAP_CARDIAC_RR_SOURCE, cardiacAxis.source);
 			itk::EncapsulateMetaData<std::string>(
 				dict, ITKSNAP_CARDIAC_RR_EXACT, cardiacAxis.exact ? "1" : "0");
+			// Mirror into the modality-agnostic frame axis (unit = %R-R).
+			itk::EncapsulateMetaData<std::string>(
+				dict, ITKSNAP_FRAME_AXIS_VALUES, JoinDoubles(cardiacAxis.rr_percent));
+			itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_UNIT, std::string("%"));
+			itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_LABEL, std::string("%R-R"));
 			}
 		}
 
@@ -1543,6 +1557,17 @@ GuidedNativeImageIO
 			unsigned long len = ecd_dim[0] * ecd_dim[1] * ecd_dim[2] * ecd_dim[3];
 
 			const gdcm::ByteValue *bv = de.GetByteValue();
+
+			// Guard: the pixel data must hold W*H*D*T bytes (uint8). A short/empty
+			// element would otherwise make GetBuffer below read past the end.
+			unsigned long bvLen = bv ? (unsigned long) bv->GetLength() : 0UL;
+			if (!bv || bvLen < len)
+				throw IRISException(
+					"Error: 4D echo pixel data is too small for the declared volume "
+					"(%lu bytes for %d x %d x %d x %d = %lu). The file may be truncated "
+					"or the Philips 3D dimension tags may be inconsistent.",
+					bvLen,
+					(int) ecd_dim[0], (int) ecd_dim[1], (int) ecd_dim[2], (int) ecd_dim[3], len);
 
 			// Start loading image
 			typename NativeImageType::Pointer ecd_image = NativeImageType::New();
@@ -1656,6 +1681,18 @@ GuidedNativeImageIO
 						}
 					}
 				}
+
+			// Modality-agnostic frame axis: echo is a real-time cine, so the
+			// per-frame values are elapsed time (0, ft, 2ft, ...) in milliseconds
+			// (ft = FrameTime = ecd_spc[3]). The writers/GUI consume these.
+			{
+			std::vector<double> times(ecd_dim[3]);
+			for (unsigned long t = 0; t < ecd_dim[3]; ++t)
+				times[t] = static_cast<double>(t) * ecd_spc[3];
+			itk::EncapsulateMetaData<std::string>(dico, ITKSNAP_FRAME_AXIS_VALUES, JoinDoubles(times));
+			itk::EncapsulateMetaData<std::string>(dico, ITKSNAP_FRAME_AXIS_UNIT, std::string("ms"));
+			itk::EncapsulateMetaData<std::string>(dico, ITKSNAP_FRAME_AXIS_LABEL, std::string("time"));
+			}
 
 			ecd_image->SetMetaDataDictionary(dico);
 
@@ -1874,34 +1911,32 @@ GuidedNativeImageIO
   union { uint16_t i; uint8_t c[2]; } bint = {0x0102};
   const char *endian = (bint.c[0] == 0x01) ? "big" : "little";
 
-  // Build the axis-0 (frame) index values. Prefer the cardiac %R-R axis carried
-  // in the image MetaDataDictionary; fall back to plain ordinals 0..T-1 when it
-  // is absent or its length does not match the number of frames.
+  // Build the axis-0 (frame) index values. Prefer the modality-agnostic frame
+  // axis carried in the image dictionary (CT: %R-R, unit "%"; echo: elapsed
+  // frame time, unit "ms"); fall back to the legacy cardiac %R-R keys, then to
+  // plain ordinals 0..T-1.
   const itk::MetaDataDictionary &dict = image->GetMetaDataDictionary();
-  std::string rrStr, rrSource, rrExact;
-  itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_PERCENT, rrStr);
+  std::string axisStr, axisUnit, axisLabel, rrSource, rrExact;
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_VALUES, axisStr);
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_UNIT, axisUnit);
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_LABEL, axisLabel);
+  if (axisStr.empty())
+    {
+    itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_PERCENT, axisStr);
+    if (!axisStr.empty()) { axisUnit = "%"; axisLabel = "%R-R"; }
+    }
   itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_SOURCE, rrSource);
   itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_EXACT, rrExact);
-  std::vector<double> rr = ParseDoubleList(rrStr);
-  const bool haveRR = (rr.size() == static_cast<std::size_t>(T));
+  std::vector<double> axisVals = ParseDoubleList(axisStr);
+  const bool haveAxis = (axisVals.size() == static_cast<std::size_t>(T));
+  const std::string frameLabel = (haveAxis && !axisLabel.empty()) ? axisLabel : "frame";
 
   std::ostringstream axisIdxValues;
-  if (haveRR)
+  axisIdxValues << std::setprecision(10);
+  for (long t = 0; t < T; ++t)
     {
-    axisIdxValues << std::setprecision(10);
-    for (long t = 0; t < T; ++t)
-      {
-      if (t > 0) axisIdxValues << ' ';
-      axisIdxValues << rr[(std::size_t)t];
-      }
-    }
-  else
-    {
-    for (long t = 0; t < T; ++t)
-      {
-      if (t > 0) axisIdxValues << ' ';
-      axisIdxValues << t;
-      }
+    if (t > 0) axisIdxValues << ' ';
+    axisIdxValues << (haveAxis ? axisVals[(std::size_t)t] : (double) t);
     }
 
   // Open file for binary writing
@@ -1934,19 +1969,23 @@ GuidedNativeImageIO
   f << "kinds: list domain domain domain\n";
   f << "endian: " << endian << "\n";
   f << "encoding: raw\n";
-  f << "labels: " << (haveRR ? "\"%R-R\"" : "\"frame\"") << " \"\" \"\" \"\"\n";
+  f << "labels: \"" << frameLabel << "\" \"\" \"\" \"\"\n";
   f << "space origin: " << fmt3(origin[0], origin[1], origin[2]) << "\n";
   f << "measurement frame: (1,0,0) (0,1,0) (0,0,1)\n";
   f << "axis 0 index type:=numeric\n";
   f << "axis 0 index values:=" << axisIdxValues.str() << "\n";
-  if (haveRR)
+  if (haveAxis)
     {
-    // Cardiac phase axis metadata (round-trips as NRRD key:=value fields).
-    f << "axis 0 index units:=%\n";
-    f << ITKSNAP_CARDIAC_RR_PERCENT << ":=" << rrStr << "\n";
-    f << ITKSNAP_CARDIAC_NUM_PHASES << ":=" << rr.size() << "\n";
-    if (!rrSource.empty()) f << ITKSNAP_CARDIAC_RR_SOURCE << ":=" << rrSource << "\n";
-    if (!rrExact.empty())  f << ITKSNAP_CARDIAC_RR_EXACT  << ":=" << rrExact << "\n";
+    // Frame-axis metadata (round-trips as NRRD key:=value fields).
+    if (!axisUnit.empty())  f << "axis 0 index units:=" << axisUnit << "\n";
+    f << ITKSNAP_FRAME_AXIS_VALUES << ":=" << axisStr << "\n";
+    if (!axisUnit.empty())  f << ITKSNAP_FRAME_AXIS_UNIT  << ":=" << axisUnit << "\n";
+    if (!axisLabel.empty()) f << ITKSNAP_FRAME_AXIS_LABEL << ":=" << axisLabel << "\n";
+    f << ITKSNAP_CARDIAC_NUM_PHASES << ":=" << axisVals.size() << "\n";
+    // CT-specific provenance + legacy %R-R key (kept when the axis is %R-R).
+    if (axisUnit == "%")   f << ITKSNAP_CARDIAC_RR_PERCENT << ":=" << axisStr << "\n";
+    if (!rrSource.empty()) f << ITKSNAP_CARDIAC_RR_SOURCE  << ":=" << rrSource << "\n";
+    if (!rrExact.empty())  f << ITKSNAP_CARDIAC_RR_EXACT   << ":=" << rrExact << "\n";
     }
   f << "\n"; // blank line ends NRRD header
 
