@@ -90,6 +90,8 @@
 #include <cstring>
 #include <set>
 #include "itkMetaDataObject.h"
+#include "itksys/SystemTools.hxx"
+#include "json/json.h"
 
 // Platform-specific headers for available memory query (used in image size check)
 #if defined(__APPLE__)
@@ -235,39 +237,115 @@ std::string NiftiSidecarPath(const std::string &imagePath)
   return imagePath + ".json";
 }
 
-// Write a JSON sidecar carrying the cardiac %R-R axis next to a NIfTI image.
-// NIfTI's header has no per-frame list, so the sidecar is the authoritative
-// record of the (possibly non-uniform) %R-R values. No-op if the image carries
-// no cardiac axis. Returns the sidecar path written, or "" if none.
+// Write a JSON sidecar carrying the per-frame axis (CT %R-R / echo time) and
+// slice thickness next to a NIfTI image. NIfTI's header has no per-frame list or
+// slice-thickness field, so the sidecar is the authoritative record for them.
+// No-op if the image carries neither. Returns the sidecar path, or "" if none.
 std::string WriteCardiacJsonSidecar(const std::string &imagePath,
                                     const itk::MetaDataDictionary &dict)
 {
-  std::string rrStr, source, exact, nphases;
-  if (!itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_PERCENT, rrStr) || rrStr.empty())
-    return std::string();
+  // Frame axis: prefer the generic keys, fall back to the legacy %R-R keys.
+  std::string axisStr, axisUnit, axisLabel, source, exact, thickStr;
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_VALUES, axisStr);
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_UNIT, axisUnit);
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_LABEL, axisLabel);
+  if (axisStr.empty())
+    {
+    itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_PERCENT, axisStr);
+    if (!axisStr.empty()) { axisUnit = "%"; axisLabel = "%R-R"; }
+    }
   itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_SOURCE, source);
   itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_EXACT, exact);
-  itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_NUM_PHASES, nphases);
+  itk::ExposeMetaData<std::string>(dict, "0018|0050", thickStr); // SliceThickness (mm)
 
-  std::vector<double> rr = ParseDoubleList(rrStr);
-  std::ostringstream js;
-  js << std::setprecision(10);
-  js << "{\n";
-  js << "  \"PhaseAxis\": \"cardiac_RR_percent\",\n";
-  js << "  \"Unit\": \"%\",\n";
-  if (!source.empty())  js << "  \"Source\": \"" << source << "\",\n";
-  if (!exact.empty())   js << "  \"Exact\": " << (exact == "1" ? "true" : "false") << ",\n";
-  if (!nphases.empty()) js << "  \"NumberOfFrames\": " << nphases << ",\n";
-  js << "  \"RRPercent\": [";
-  for (std::size_t i = 0; i < rr.size(); ++i) { if (i) js << ", "; js << rr[i]; }
-  js << "]\n}\n";
+  std::vector<double> axisVals = ParseDoubleList(axisStr);
+  if (axisVals.empty() && thickStr.empty())
+    return std::string();
+
+  Json::Value root;
+  if (!axisVals.empty())
+    {
+    Json::Value arr(Json::arrayValue);
+    for (double v : axisVals) arr.append(v);
+    root["FrameAxisValues"] = arr;
+    root["FrameAxisUnit"]   = axisUnit;
+    root["FrameAxisLabel"]  = axisLabel;
+    root["NumberOfFrames"]  = (Json::UInt) axisVals.size();
+    if (!source.empty()) root["Source"] = source;
+    if (!exact.empty())  root["Exact"]  = (exact == "1");
+    }
+  if (!thickStr.empty())
+    {
+    try { root["SliceThickness"] = std::stod(thickStr); } catch (...) {}
+    }
 
   std::string sidecar = NiftiSidecarPath(imagePath);
   std::ofstream f(sidecar.c_str());
   if (!f.is_open())
     return std::string();
-  f << js.str();
+  Json::StreamWriterBuilder wb;
+  wb["indentation"] = "  ";
+  f << Json::writeString(wb, root) << "\n";
   return sidecar;
+}
+
+// Read a JSON sidecar (written by WriteCardiacJsonSidecar) next to a NIfTI image
+// and inject its contents into the dictionary, so a NIfTI reload recovers the
+// per-frame axis + slice thickness that NIfTI itself cannot store in-header.
+// No-op when the sidecar is absent or unparseable. Returns true if anything was
+// injected.
+bool ReadCardiacJsonSidecar(const std::string &imagePath, itk::MetaDataDictionary &dict)
+{
+  std::string sidecar = NiftiSidecarPath(imagePath);
+  if (!itksys::SystemTools::FileExists(sidecar.c_str()))
+    return false;
+
+  std::ifstream f(sidecar.c_str());
+  if (!f.is_open())
+    return false;
+
+  Json::CharReaderBuilder rb;
+  Json::Value root;
+  std::string errs;
+  if (!Json::parseFromStream(rb, f, &root, &errs) || !root.isObject())
+    return false;
+
+  bool injected = false;
+
+  const Json::Value &vals = root["FrameAxisValues"];
+  if (vals.isArray() && vals.size() > 0)
+    {
+    std::vector<double> v;
+    for (const auto &e : vals) v.push_back(e.asDouble());
+    std::string joined = JoinDoubles(v);
+    std::string unit  = root.get("FrameAxisUnit", "").asString();
+    std::string label = root.get("FrameAxisLabel", "").asString();
+    itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_VALUES, joined);
+    if (!unit.empty())  itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_UNIT, unit);
+    if (!label.empty()) itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_LABEL, label);
+    itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_CARDIAC_NUM_PHASES, std::to_string(v.size()));
+    if (unit == "%")
+      {
+      // Restore the legacy cardiac keys so CT consumers + the GUI "approx" flag
+      // round-trip too.
+      itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_PERCENT, joined);
+      if (root.isMember("Source"))
+        itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_SOURCE, root["Source"].asString());
+      if (root.isMember("Exact"))
+        itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_EXACT, root["Exact"].asBool() ? "1" : "0");
+      }
+    injected = true;
+    }
+
+  if (root.isMember("SliceThickness"))
+    {
+    std::ostringstream ss;
+    ss << std::setprecision(10) << root["SliceThickness"].asDouble();
+    itk::EncapsulateMetaData<std::string>(dict, "0018|0050", ss.str());
+    injected = true;
+    }
+
+  return injected;
 }
 
 // ---------------------------------------------------------------------------
@@ -1867,6 +1945,14 @@ GuidedNativeImageIO
     m_NativeImage->SetDirection(direction);
     m_NativeImage->SetSpacing(spacing);
     }
+
+  // For 4D NIfTI, recover the per-frame axis (CT %R-R / echo time) and slice
+  // thickness from the JSON sidecar that SaveImage writes — NIfTI cannot store
+  // them in-header. NRRD/seq.nrrd carry them in-file and need no sidecar.
+  if ((m_FileFormat == FORMAT_NIFTI || m_FileFormat == FORMAT_ANALYZE)
+      && m_NativeImage
+      && m_NativeImage->GetLargestPossibleRegion().GetSize()[3] > 1)
+    ReadCardiacJsonSidecar(FileName, m_NativeImage->GetMetaDataDictionary());
 }
 
 template<typename TImageType>
@@ -1931,6 +2017,13 @@ GuidedNativeImageIO
   const bool haveAxis = (axisVals.size() == static_cast<std::size_t>(T));
   const std::string frameLabel = (haveAxis && !axisLabel.empty()) ? axisLabel : "frame";
 
+  // Slice thickness (DICOM 0018,0050) — distinct from the Z voxel spacing.
+  std::string thickStr;
+  itk::ExposeMetaData<std::string>(dict, "0018|0050", thickStr);
+  double thickZ = 0.0; bool haveThick = false;
+  try { if (!thickStr.empty()) { thickZ = std::stod(thickStr); haveThick = true; } }
+  catch (...) { haveThick = false; }
+
   std::ostringstream axisIdxValues;
   axisIdxValues << std::setprecision(10);
   for (long t = 0; t < T; ++t)
@@ -1967,6 +2060,10 @@ GuidedNativeImageIO
     << fmt3(spacing[1]*direction[1][0], spacing[1]*direction[1][1], spacing[1]*direction[1][2]) << " "
     << fmt3(spacing[2]*direction[2][0], spacing[2]*direction[2][1], spacing[2]*direction[2][2]) << "\n";
   f << "kinds: list domain domain domain\n";
+  // Slice thickness (through-plane PSF width) on the Z axis — native NRRD field
+  // (axes are frame, x, y, z) plus the DICOM key for ITK-SNAP's own round-trip.
+  if (haveThick)
+    f << "thicknesses: nan nan nan " << std::setprecision(10) << thickZ << "\n";
   f << "endian: " << endian << "\n";
   f << "encoding: raw\n";
   f << "labels: \"" << frameLabel << "\" \"\" \"\" \"\"\n";
@@ -1987,6 +2084,8 @@ GuidedNativeImageIO
     if (!rrSource.empty()) f << ITKSNAP_CARDIAC_RR_SOURCE  << ":=" << rrSource << "\n";
     if (!rrExact.empty())  f << ITKSNAP_CARDIAC_RR_EXACT   << ":=" << rrExact << "\n";
     }
+  if (haveThick)
+    f << "0018|0050:=" << thickStr << "\n"; // SliceThickness, for ITK-SNAP round-trip
   f << "\n"; // blank line ends NRRD header
 
   // Write raw pixel data
