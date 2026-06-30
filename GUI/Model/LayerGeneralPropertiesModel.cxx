@@ -578,13 +578,35 @@ GetCrntTimePointCardiacPhaseValue(std::string &value)
 
   unsigned int crntTP = driver->GetCursorTimePoint() + 1;
   TimePointProperty *tpp = m_TimePointProperties->GetProperty(crntTP);
-  if (!tpp || !tpp->HasRRPercent())
+  if (!tpp)
     return false;
 
+  // Prefer the modality-agnostic frame axis (CT: %R-R; echo: frame time in ms).
   std::ostringstream oss;
-  oss << tpp->GetRRPercent() << "% R-R";
-  if (!tpp->GetRRPercentExact())
-    oss << " (approx)";
+  if (tpp->HasFrameValue())
+    {
+    if (tpp->GetFrameUnit() == "%")
+      {
+      oss << tpp->GetFrameValue() << "% R-R";
+      if (tpp->HasRRPercent() && !tpp->GetRRPercentExact())
+        oss << " (approx)";
+      }
+    else
+      {
+      oss << tpp->GetFrameValue();
+      if (!tpp->GetFrameUnit().empty())
+        oss << ' ' << tpp->GetFrameUnit();
+      }
+    }
+  else if (tpp->HasRRPercent()) // back-compat: workspace without a frame axis
+    {
+    oss << tpp->GetRRPercent() << "% R-R";
+    if (!tpp->GetRRPercentExact())
+      oss << " (approx)";
+    }
+  else
+    return false;
+
   value = oss.str();
   return true;
 }

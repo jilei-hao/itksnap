@@ -65,6 +65,25 @@ public:
 	void SetRRPercentExact(bool exact)
 	{ RRPercentExact = exact; }
 
+	/** Modality-agnostic per-frame axis value + unit. For 4D CTA this is the
+	 *  %R-R (unit "%"); for 4D echo it is the elapsed frame time (unit "ms").
+	 *  NaN/empty when the image carries no frame axis. */
+	double GetFrameValue() const
+	{ return FrameValue; }
+
+	const std::string &GetFrameUnit() const
+	{ return FrameUnit; }
+
+	bool HasFrameValue() const
+	{ return !std::isnan(FrameValue); }
+
+	void SetFrameValue(double v, const std::string &unit)
+	{
+		FrameValue = v;
+		FrameUnit = unit;
+		InvokeEvent(WrapperGlobalMetadataChangeEvent());
+	}
+
 protected:
 	TimePointProperty() {};
 	virtual ~TimePointProperty() {}
@@ -74,6 +93,8 @@ private:
   TagList Tags;
   double RRPercent = std::numeric_limits<double>::quiet_NaN();
   bool RRPercentExact = false;
+  double FrameValue = std::numeric_limits<double>::quiet_NaN();
+  std::string FrameUnit;
 };
 
 class TimePointProperties : public itk::DataObject

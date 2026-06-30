@@ -895,7 +895,7 @@ font-size:11px;
          <item row="1" column="0">
           <widget class="QLabel" name="lblTPCardiacPhase">
            <property name="text">
-            <string>Cardiac phase:</string>
+            <string>Phase / time:</string>
            </property>
           </widget>
          </item>

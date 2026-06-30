@@ -10,7 +10,11 @@
 #include <string>
 
 namespace {
-// Mirrors the cardiac dictionary keys written by GuidedNativeImageIO (4D CTA).
+// Mirrors the dictionary keys written by GuidedNativeImageIO. The generic
+// frame-axis keys are modality-agnostic (CT: %R-R; echo: frame time); the
+// cardiac keys carry CT-specific provenance (the "approx" flag).
+const char *ITKSNAP_FRAME_AXIS_VALUES  = "ITKSNAP_FrameAxis_Values";
+const char *ITKSNAP_FRAME_AXIS_UNIT    = "ITKSNAP_FrameAxis_Unit";
 const char *ITKSNAP_CARDIAC_RR_PERCENT = "ITKSNAP_Cardiac_RRPercent";
 const char *ITKSNAP_CARDIAC_RR_EXACT   = "ITKSNAP_Cardiac_RRPercentExact";
 
@@ -58,24 +62,33 @@ TimePointProperties::CreateNewData()
 
   unsigned int nt = m_Parent->GetParent()->GetNumberOfTimePoints();
 
-  // Pull the cardiac %R-R axis (if any) from the main image metadata so each
-  // time point is tagged with its phase. Present for 4D CTA loaded via
-  // GuidedNativeImageIO; absent for non-cardiac series.
-  std::vector<double> rr;
+  // Pull the per-frame axis (if any) from the main image metadata so each time
+  // point is tagged with its value. The generic frame axis is filled by both
+  // 4D CTA (%R-R) and 4D echo (frame time, ms); the cardiac %R-R keys add the
+  // CT-specific "approx" flag. Absent for non-cardiac/non-cine series.
+  std::vector<double> frame, rr;
+  std::string frameUnit;
   bool rrExact = false;
   if (ImageWrapperBase *mainw = m_Parent->GetMain())
     {
     auto mda = mainw->GetMetaDataAccess();
+    if (mda.HasKey(ITKSNAP_FRAME_AXIS_VALUES))
+      frame = ParseDoubleList(mda.GetValueAsString(ITKSNAP_FRAME_AXIS_VALUES));
+    if (mda.HasKey(ITKSNAP_FRAME_AXIS_UNIT))
+      frameUnit = mda.GetValueAsString(ITKSNAP_FRAME_AXIS_UNIT);
     if (mda.HasKey(ITKSNAP_CARDIAC_RR_PERCENT))
       rr = ParseDoubleList(mda.GetValueAsString(ITKSNAP_CARDIAC_RR_PERCENT));
     if (mda.HasKey(ITKSNAP_CARDIAC_RR_EXACT))
       rrExact = (mda.GetValueAsString(ITKSNAP_CARDIAC_RR_EXACT) == "1");
     }
+  const bool haveFrame = (frame.size() == nt);
   const bool haveRR = (rr.size() == nt);
 
   for (unsigned int i = 1; i <= nt; ++i)
     {
 		auto tpp = TimePointProperty::New();
+		if (haveFrame)
+			tpp->SetFrameValue(frame[i - 1], frameUnit);
 		if (haveRR)
 			{
 			tpp->SetRRPercent(rr[i - 1]);
@@ -131,6 +144,11 @@ TimePointProperties::Load(Registry &folder)
 						tpp->SetRRPercent(rr);
 						tpp->SetRRPercentExact(tpFolder["RRPercentExact"][false]);
 						}
+
+					// Generic frame axis value + unit (FormatVersion >= 3)
+					double fv = tpFolder["FrameValue"][std::numeric_limits<double>::quiet_NaN()];
+					if (!std::isnan(fv))
+						tpp->SetFrameValue(fv, tpFolder["FrameUnit"][""]);
         }
 
       this->m_TPPropertiesMap[i] = tpp;
@@ -143,8 +161,8 @@ TimePointProperties::Save(Registry &folder) const
 {
   // Record format version
   //  Future change of format use this to be backward compatible
-  //  v2 adds the cardiac %R-R fields below.
-  folder["FormatVersion"] << "2";
+  //  v2 adds the cardiac %R-R fields; v3 adds the generic frame axis value+unit.
+  folder["FormatVersion"] << "3";
 
   // Save array size for loading
   folder["TimePoints.ArraySize"] << m_TPPropertiesMap.size();
@@ -165,6 +183,13 @@ TimePointProperties::Save(Registry &folder) const
 				{
 				tp_folder["RRPercent"] << cit->second->GetRRPercent();
 				tp_folder["RRPercentExact"] << cit->second->GetRRPercentExact();
+				}
+
+			// Generic frame axis value + unit (only when known)
+			if (cit->second->HasFrameValue())
+				{
+				tp_folder["FrameValue"] << cit->second->GetFrameValue();
+				tp_folder["FrameUnit"] << cit->second->GetFrameUnit();
 				}
     }
 }
