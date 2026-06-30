@@ -176,7 +176,6 @@ and updates on `CursorTimePointUpdateEvent`.
 - NIfTI `toffset`/`xyzt_units` are ITK defaults (the sidecar is authoritative for the axis semantics).
 - 4DCTA detection is a coarse "Siemens/GE CT directory" heuristic (benign: a single-phase series
   loads as a 1-time-point image).
-- The GUI "Phase / time:" field is implemented but its interactive display still awaits a visual check.
 
 (Done since earlier drafts: grid validation/quarantine for non-rectangular grids; `NumberOfPhases` in
 the seq header; echo support; NIfTI sidecar reading; slice thickness across seq.nrrd/nrrd/sidecar.)
