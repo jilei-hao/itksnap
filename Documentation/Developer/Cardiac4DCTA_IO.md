@@ -99,19 +99,24 @@ ITKSNAP_Cardiac_RRPercentExact:=1
 Geometry is LPS; the buffer is reordered from ITK's X-fastest to NRRD's T-fastest layout. If no
 cardiac axis is present, it falls back to ordinal frame indices `0 … T-1`.
 
-### 3.2 `.nii.gz` (NIfTI) — header + JSON sidecar
-NIfTI has no per-frame list, so:
+### 3.2 `.nii.gz` (NIfTI) — header + JSON sidecar (read **and** written)
+NIfTI has no per-frame list and no slice-thickness field, so:
 
-- the uniform `pixdim[4]` = cardiac-cycle fraction step (from the 4D geometry); and
-- `WriteCardiacJsonSidecar()` writes a `<name>.json` sidecar with the **authoritative** `%R-R`
-  array + provenance:
+- the uniform `pixdim[4]` = frame step (from the 4D geometry); and
+- `WriteCardiacJsonSidecar()` (jsoncpp) writes a `<name>.json` sidecar with the **authoritative**
+  frame axis (values + unit + label, CT or echo) + `SliceThickness` + provenance:
 
 ```json
-{ "PhaseAxis": "cardiac_RR_percent", "Unit": "%", "Source": "series_description",
-  "Exact": true, "NumberOfFrames": 20, "RRPercent": [0, 5, 10, … 95] }
+{ "FrameAxisLabel": "%R-R", "FrameAxisUnit": "%", "NumberOfFrames": 20,
+  "FrameAxisValues": [0, 5, 10, … 95], "Source": "series_description", "Exact": true,
+  "SliceThickness": 0.5 }
 ```
 
-(`toffset`/`xyzt_units` are left at ITK defaults; the sidecar is canonical for the phase semantics.)
+Crucially, the sidecar is **read back**: `ReadCardiacJsonSidecar()` is called at the end of
+`DoReadNative` for 4D NIfTI/Analyze, parses `<name>.json`, and injects the `ITKSNAP_FrameAxis_*`
+keys (plus the legacy `%R-R` keys when the unit is `%`, and `0018,0050` slice thickness) back into
+the dictionary. So a NIfTI write→reload recovers the axis (and the GUI "Phase / time:" field) and the
+thickness. (`toffset`/`xyzt_units` are still ITK defaults; the sidecar is canonical.)
 
 ### 3.3 `.nrrd` (plain NRRD)
 The `ITKSNAP_Cardiac_*` keys ride the `MetaDataDictionary` and are serialized automatically by ITK's
@@ -168,10 +173,13 @@ and updates on `CursorTimePointUpdateEvent`.
 - `WriteToFileAsFloat` casts to a **3D** float (current time point); 4D non-identity-mapped images
   export only the current phase. 4D CTA loads identity-mapped (short→short), so it uses the 4D path
   and is unaffected.
-- The `.seq.nrrd` header omits `ITKSNAP_Cardiac_NumberOfPhases` (redundant with the frame count).
-- NIfTI `toffset`/`xyzt_units` are ITK defaults (the sidecar is authoritative).
-- No grid validation/quarantine for non-rectangular DICOM grids; 4DCTA detection is a coarse
-  "Siemens/GE CT directory" heuristic. (Tracked as P4 in the wrapper-repo plan.)
+- NIfTI `toffset`/`xyzt_units` are ITK defaults (the sidecar is authoritative for the axis semantics).
+- 4DCTA detection is a coarse "Siemens/GE CT directory" heuristic (benign: a single-phase series
+  loads as a 1-time-point image).
+- The GUI "Phase / time:" field is implemented but its interactive display still awaits a visual check.
+
+(Done since earlier drafts: grid validation/quarantine for non-rectangular grids; `NumberOfPhases` in
+the seq header; echo support; NIfTI sidecar reading; slice thickness across seq.nrrd/nrrd/sidecar.)
 
 ---
 
