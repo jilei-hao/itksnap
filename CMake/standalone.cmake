@@ -69,7 +69,7 @@ INCLUDE(${ITK_USE_FILE})
 #############################################
 # REQUIRE VTK                               #
 #############################################
-FIND_PACKAGE(VTK 9.3.1 REQUIRED COMPONENTS
+FIND_PACKAGE(VTK 9.3 REQUIRED COMPONENTS
   ChartsCore
   CommonComputationalGeometry
   CommonCore
