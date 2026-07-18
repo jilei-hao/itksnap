@@ -111,6 +111,9 @@ public:
   size_t GetNumberOfRLEs() const;
   const DList &GetDeltas() const { return m_Deltas; }
 
+  /** Human-readable name/title of this commit (e.g. "Paint Brush"). */
+  const std::string &GetName() const { return m_Name; }
+
 protected:
   DList m_Deltas;
   std::string m_Name;
@@ -157,6 +160,11 @@ public:
 
   size_t GetNumberOfCommits() const
     { return m_CommitList.size(); }
+
+  /** Access the most recently committed commit (i.e. the newest undo point).
+   *  Only valid when GetNumberOfCommits() > 0. */
+  const Commit &GetLastCommit() const
+    { return m_CommitList.back(); }
 
 private:
 

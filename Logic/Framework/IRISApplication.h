@@ -46,6 +46,7 @@
 #include "itkCommand.h"
 #include "SystemInterface.h"
 #include "UndoDataManager.h"
+#include "SegmentationAuditRecord.h"
 #include "SNAPEvents.h"
 #include "StdoutProgressDelegate.h"
 #include "StdoutSSHAuthDelegate.h"
@@ -329,6 +330,24 @@ public:
    * This method gets the currently selected segmentation image
    */
   LabelImageWrapper *GetSelectedSegmentationLayer() const;
+
+  /**
+   * Provenance / audit trail for segmentation edits.
+   *
+   * Declare who is responsible for the *next* committed edit on the selected
+   * segmentation layer. This auto-resets to HUMAN after each commit, so an
+   * agent-driven code path (e.g. applying an automatic segmentation) must set
+   * AGENT immediately before the operation that produces the commit. Returns
+   * true if a segmentation layer was armed, false if none is selected.
+   */
+  bool SetNextSegmentationCommitActor(SegmentationAuditRecord::Actor actor);
+
+  /**
+   * Return the structured audit record for the most recent committed edit on
+   * the selected segmentation layer, serialized as JSON. Returns the JSON
+   * literal "null" if no segmentation is loaded or no edit has been committed.
+   */
+  std::string GetLastSegmentationAuditRecordJSON() const;
 
   /**
    * Update the SNAP image data with an external segmentation image (e.g.,

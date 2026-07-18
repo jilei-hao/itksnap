@@ -280,6 +280,7 @@ SET(LOGIC_CXX
   Logic/Framework/IRISApplication.cxx
   Logic/Framework/IRISImageData.cxx
   Logic/Framework/LayerIterator.cxx
+  Logic/Framework/SegmentationAuditRecord.cxx
   Logic/Framework/SNAPImageData.cxx
   Logic/Framework/TimePointProperties.cxx
   Logic/Framework/UndoDataManager_LabelType.cxx
@@ -412,6 +413,7 @@ SET(LOGIC_HEADERS
   Logic/Framework/LayerAssociation.h
   Logic/Framework/LayerAssociation.txx
   Logic/Framework/LayerIterator.h
+  Logic/Framework/SegmentationAuditRecord.h
   Logic/Framework/SegmentationUpdateIterator.h
   Logic/Framework/SNAPImageData.h
   Logic/Framework/TimePointProperties.h
@@ -1530,6 +1532,14 @@ TARGET_LINK_LIBRARIES(logic_api_test ${SNAP_EXTERNAL_LIBS} itksnaplogic)
 TARGET_INCLUDE_DIRECTORIES(logic_api_test PUBLIC ${SNAP_INCLUDE_DIRS})
 
 add_test(NAME IRISApplicationTest COMMAND logic_api_test)
+
+# Logic-tier (Qt-free) test for the segmentation audit record.
+ADD_EXECUTABLE(segmentation_audit_test
+    Testing/Logic/SegmentationAuditRecordTest.cxx)
+TARGET_LINK_LIBRARIES(segmentation_audit_test ${SNAP_EXTERNAL_LIBS} itksnaplogic)
+TARGET_INCLUDE_DIRECTORIES(segmentation_audit_test PUBLIC ${SNAP_INCLUDE_DIRS})
+
+add_test(NAME SegmentationAuditRecordTest COMMAND segmentation_audit_test)
 
 # Needs the same manifest as the main executable to get the UTF-8 process code page
 ADD_EXECUTABLE(nonascii_path_test
