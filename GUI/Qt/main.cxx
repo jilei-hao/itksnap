@@ -29,6 +29,11 @@
 
 #include <QtCore/qlibraryinfo.h>
 #include <QtCore/qtranslator.h>
+#include <QLocalServer>
+#include <QLocalSocket>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QDebug>
 #include <iostream>
 #include <clocale>
 #include <cstdlib>
@@ -281,6 +286,7 @@ usage(const char *progname)
   cout << "   --testdir DIR        : Set the root directory for tests. " << endl;
   cout << "   --testacc factor     : Adjust the interval between test commands by factor (e.g., 0.5). " << endl;
   cout << "   --test-ipc           : Let a test communicate with other ITK-SNAP instances (off by default). " << endl;
+  cout << "   --agent-listen NAME  : Listen on local socket NAME for live agent commands (JSON-RPC). " << endl;
   cout << "   --css file           : Read stylesheet from file." << endl;
   cout << "   --opengl MAJOR MINOR : Set the OpenGL major and minor version. Experimental." << endl;
   cout << "   --testgl             : Diagnose OpenGL/VTK issues." << endl;
@@ -338,6 +344,9 @@ public:
   std::string xTestId;
   std::string fnTestDir;
   double      xTestAccel = 1.0;
+
+  // Live agent command channel: QLocalServer socket name (empty = disabled)
+  std::string agentListen;
 
   // Current working directory
   std::string cwd;
@@ -536,6 +545,9 @@ parse(int argc, char *argv[], CommandLineRequest &argdata)
   parser.AddOption("--test", 1);
   parser.AddOption("--testdir", 1);
   parser.AddOption("--testacc", 1);
+
+  // Live agent command channel (JSON-RPC over a local socket)
+  parser.AddOption("--agent-listen", 1);
 
   // Restrict number of threads
   // TODO: use and document this
@@ -762,6 +774,9 @@ parse(int argc, char *argv[], CommandLineRequest &argdata)
     else
       argdata.xTestAccel = 1.0;
   }
+
+  if (parseResult.IsOptionPresent("--agent-listen"))
+    argdata.agentListen = parseResult.GetOptionParameter("--agent-listen");
 
   // GUI stuff
   if (parseResult.IsOptionPresent("--style"))
@@ -1518,6 +1533,74 @@ main(int argc, char *argv[])
     // Assign the main window to the application. We do this right before
     // starting the event loop.
     app.setMainWindow(mainwin);
+
+    // ------------------------------------------------------------------
+    // Live agent command channel (Gate-2 prototype). Unlike --test (canned
+    // JS run on a worker thread BEFORE app.exec()), this QLocalServer serves
+    // DURING app.exec() on the GUI thread, so an external agent can drive the
+    // live window the human sees. JSON-RPC, newline-delimited, per connection.
+    // ------------------------------------------------------------------
+    if (argdata.agentListen.size() > 0)
+    {
+      QString sockName = QString::fromStdString(argdata.agentListen);
+      QLocalServer::removeServer(sockName); // clear any stale socket
+      QLocalServer *agentServer = new QLocalServer(mainwin);
+      QObject::connect(agentServer, &QLocalServer::newConnection, mainwin,
+        [agentServer, gui]() {
+          QLocalSocket *sock = agentServer->nextPendingConnection();
+          QObject::connect(sock, &QLocalSocket::readyRead, sock, [sock, gui]() {
+            while (sock->canReadLine())
+            {
+              QJsonObject req = QJsonDocument::fromJson(sock->readLine()).object();
+              QJsonObject resp;
+              resp["id"] = req.value("id");
+              QString cmd = req.value("cmd").toString();
+              IRISApplication *driver = gui->GetDriver();
+              if (cmd == "ping")
+              {
+                resp["ok"] = true; resp["result"] = "pong";
+              }
+              else if (cmd == "set_cursor" || cmd == "get_cursor")
+              {
+                if (!driver->IsMainImageLoaded())
+                {
+                  resp["ok"] = false; resp["error"] = "no image loaded";
+                }
+                else if (cmd == "set_cursor")
+                {
+                  QJsonObject a = req.value("args").toObject();
+                  Vector3i c;
+                  c[0] = a.value("x").toInt();
+                  c[1] = a.value("y").toInt();
+                  c[2] = a.value("z").toInt();
+                  driver->SetCursorPosition(c);
+                  resp["ok"] = true;
+                }
+                else // get_cursor
+                {
+                  Vector3i c = driver->GetCursorPosition();
+                  QJsonObject r;
+                  r["x"] = c[0]; r["y"] = c[1]; r["z"] = c[2];
+                  resp["ok"] = true; resp["result"] = r;
+                }
+              }
+              else
+              {
+                resp["ok"] = false;
+                resp["error"] = QString("unknown cmd: %1").arg(cmd);
+              }
+              sock->write(QJsonDocument(resp).toJson(QJsonDocument::Compact));
+              sock->write("\n");
+              sock->flush();
+            }
+          });
+          QObject::connect(sock, &QLocalSocket::disconnected, sock, &QObject::deleteLater);
+        });
+      if (!agentServer->listen(sockName))
+        qWarning() << "agent-listen: failed to listen on" << sockName << ":" << agentServer->errorString();
+      else
+        qInfo() << "agent-listen: listening on" << agentServer->fullServerName();
+    }
 
     // Do the test
     if (ui_testing)
