@@ -3,6 +3,9 @@
 
 #include "ImageWrapperTraits.h"
 #include "ScalarImageWrapper.h"
+#include "SegmentationAuditRecord.h"
+
+#include <vector>
 
 template <typename TPixel> class UndoDataManager;
 template <typename TPixel> class UndoDataManagerCommit;
@@ -79,6 +82,33 @@ public:
   /** Get the undo manager */
   const UndoManagerType *GetUndoManager() const;
 
+  /**
+   * Provenance / audit trail. Every committed edit (see StoreUndoPoint) is
+   * captured as a structured SegmentationAuditRecord: operation name, actor,
+   * timestamp, changed-voxel count, bounding box, and before/after label
+   * histograms. This turns an expert correction into a machine-consumable
+   * return value rather than a side effect.
+   */
+
+  /** Declare who is responsible for the *next* commit. Auto-resets to HUMAN
+   *  after each commit, so agent-driven code must set AGENT immediately before
+   *  the operation that produces the commit. */
+  void SetNextCommitActor(SegmentationAuditRecord::Actor actor)
+    { m_NextCommitActor = actor; }
+
+  /** Whether an audit record has been captured since the wrapper was created. */
+  bool HasLastAuditRecord() const
+    { return m_HasLastAuditRecord; }
+
+  /** The audit record for the most recent committed edit. Only valid when
+   *  HasLastAuditRecord() is true. */
+  const SegmentationAuditRecord &GetLastAuditRecord() const
+    { return m_LastAuditRecord; }
+
+  /** The full ordered log of audit records for this wrapper's lifetime. */
+  const std::vector<SegmentationAuditRecord> &GetAuditLog() const
+    { return m_AuditLog; }
+
   /** This is not used by the undo system itself, but uses the undo code to
    * store the contents of the image as an undo delta object, which can then
    * be stored in memory compactly. The caller is responsible for deleting the
@@ -111,6 +141,14 @@ protected:
   // undo steps with little cost in performance or memory. We currently associate each time
   // point with its own undo manager
   std::vector<UndoManagerType *> m_TimePointUndoManagers;
+
+  // Actor responsible for the next commit; reset to HUMAN after each commit.
+  SegmentationAuditRecord::Actor m_NextCommitActor = SegmentationAuditRecord::HUMAN;
+
+  // Provenance for the most recent committed edit, and the running log.
+  SegmentationAuditRecord              m_LastAuditRecord;
+  bool                                 m_HasLastAuditRecord = false;
+  std::vector<SegmentationAuditRecord> m_AuditLog;
 };
 
 #endif // LABELIMAGEWRAPPER_H

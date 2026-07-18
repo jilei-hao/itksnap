@@ -1504,6 +1504,42 @@ main(int argc, char *argv[])
                   resp["ok"] = true; resp["result"] = r;
                 }
               }
+              else if (cmd == "set_actor")
+              {
+                // Declare who is responsible for the next committed edit
+                // (agent | human). Consumed by the next real commit.
+                QJsonObject a = req.value("args").toObject();
+                std::string who = a.value("actor").toString().toStdString();
+                SegmentationAuditRecord::Actor act =
+                  SegmentationAuditRecord::ActorFromString(who);
+                if (act == SegmentationAuditRecord::UNKNOWN)
+                {
+                  resp["ok"] = false;
+                  resp["error"] =
+                    QString("unknown actor: %1").arg(QString::fromStdString(who));
+                }
+                else if (!driver->SetNextSegmentationCommitActor(act))
+                {
+                  resp["ok"] = false;
+                  resp["error"] = "no segmentation layer loaded";
+                }
+                else
+                {
+                  resp["ok"] = true;
+                }
+              }
+              else if (cmd == "get_audit")
+              {
+                // Return the structured audit record for the most recent
+                // committed segmentation edit (the expert correction as a
+                // machine-consumable return value).
+                std::string js = driver->GetLastSegmentationAuditRecordJSON();
+                QJsonDocument doc =
+                  QJsonDocument::fromJson(QString::fromStdString(js).toUtf8());
+                resp["ok"] = true;
+                resp["result"] = doc.isObject() ? QJsonValue(doc.object())
+                                                : QJsonValue(QJsonValue::Null);
+              }
               else
               {
                 resp["ok"] = false;

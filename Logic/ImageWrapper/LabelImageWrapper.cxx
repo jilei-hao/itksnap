@@ -44,6 +44,18 @@
 #include "UndoDataManager.h"
 #include "Rebroadcaster.h"
 
+#include <string>
+
+// Upper bound on the in-memory audit log so it cannot grow without limit over a
+// long session (mirroring the undo engine's own memory bound). The last record
+// is always retained separately in m_LastAuditRecord.
+static const size_t MAX_AUDIT_LOG = 4096;
+
+// Throwaway commit name used by the smart-brush / lasso DLS paths, which commit
+// a temporary edit only to immediately Undo() it. Such commits are not
+// audit-worthy: they must neither consume the armed actor nor enter the log.
+static const char *const TEMPORARY_UNDO_POINT_NAME = "Temporary undo point";
+
 LabelImageWrapper::LabelImageWrapper()
 {
 }
@@ -93,19 +105,52 @@ void LabelImageWrapper::StoreUndoPoint(const char *text, UndoManagerDelta *delta
     um->AddDeltaToStaging(delta);
 
   // Commit the deltas
-  um->CommitStaging(text);
+  int n_rles = um->CommitStaging(text);
+
+  // Capture a structured audit record for a genuine, non-throwaway commit. The
+  // before/after label counts and bounding box are reconstructed by walking the
+  // committed delta(s) against the current (post-edit) image: for each changed
+  // voxel new = image value and old = new - delta.
+  bool is_temporary = (text && std::string(text) == TEMPORARY_UNDO_POINT_NAME);
+  if(n_rles > 0 && !is_temporary)
+    {
+    m_LastAuditRecord = SegmentationAuditRecord::BuildFromDeltas(
+          m_Image,
+          um->GetLastCommit().GetDeltas(),
+          text ? text : "",
+          m_NextCommitActor,
+          m_TimePointIndex);
+    m_HasLastAuditRecord = true;
+
+    m_AuditLog.push_back(m_LastAuditRecord);
+    if(m_AuditLog.size() > MAX_AUDIT_LOG)
+      m_AuditLog.erase(m_AuditLog.begin());
+
+    // Consume the actor tag exactly when a record is captured, so it applies to
+    // this commit only. (Callers must arm SetNextCommitActor immediately before
+    // an operation known to produce a commit; a no-op operation leaves the tag
+    // armed for the next real commit.)
+    m_NextCommitActor = SegmentationAuditRecord::HUMAN;
+    }
 }
 
 void LabelImageWrapper::ClearUndoPoints()
 {
   UndoManagerType *um = m_TimePointUndoManagers[m_TimePointIndex];
   um->Clear();
+
+  // Keep the audit trail consistent with the (now-empty) undo history.
+  m_AuditLog.clear();
+  m_HasLastAuditRecord = false;
 }
 
 void LabelImageWrapper::ClearUndoPointsForAllTimePoints()
 {
   for(auto um : m_TimePointUndoManagers)
     um->Clear();
+
+  m_AuditLog.clear();
+  m_HasLastAuditRecord = false;
 }
 
 bool LabelImageWrapper::IsUndoPossible()
@@ -150,6 +195,11 @@ void LabelImageWrapper::Undo()
 
   // Set modified flags
   this->PixelsModified();
+
+  // The most recent commit has been reverted, so the "last audit record" no
+  // longer reflects the current segmentation state. Invalidate it: get_audit
+  // reports the last committed edit *in effect*, not one that was undone.
+  m_HasLastAuditRecord = false;
 }
 
 bool LabelImageWrapper::IsRedoPossible()

@@ -552,6 +552,27 @@ IRISApplication::GetSelectedSegmentationLayer() const
     id->FindLayer(m_GlobalState->GetSelectedSegmentationLayerId(), false, LABEL_ROLE));
 }
 
+bool
+IRISApplication::SetNextSegmentationCommitActor(SegmentationAuditRecord::Actor actor)
+{
+  LabelImageWrapper *seg = this->GetSelectedSegmentationLayer();
+  if(seg)
+    {
+    seg->SetNextCommitActor(actor);
+    return true;
+    }
+  return false;
+}
+
+std::string
+IRISApplication::GetLastSegmentationAuditRecordJSON() const
+{
+  LabelImageWrapper *seg = this->GetSelectedSegmentationLayer();
+  if(seg && seg->HasLastAuditRecord())
+    return seg->GetLastAuditRecord().ToJSON();
+  return "null";
+}
+
 inline LabelType
 IRISApplication ::DrawOverLabel(LabelType iTarget)
 {
