@@ -600,6 +600,36 @@ IRISApplication::PaintRegionWithLabel(const RegionType  &region,
   return it.GetNumberOfChangedVoxels();
 }
 
+unsigned int
+IRISApplication::PaintMaskWithLabel(const itk::Image<LabelType, 3> *mask,
+                                    LabelType                       label,
+                                    const std::string              &undoTitle)
+{
+  LabelImageWrapper *seg = this->GetSelectedSegmentationLayer();
+  if(!seg || !mask)
+    return 0;
+
+  // Operate over the overlap of the mask and segmentation grids.
+  RegionType r = mask->GetBufferedRegion();
+  if(!r.Crop(seg->GetBufferedRegion()))
+    return 0;
+
+  // Paint the label wherever the mask is nonzero, committing through the normal
+  // edit path so the audit record is captured. The source mask is a plain image
+  // walked in lockstep with the RLE segmentation update iterator (both raster
+  // order over the same region) -- mirrors UpdateSegmentationWithBinarySegmentation.
+  SegmentationUpdateIterator it_trg(seg, r, label, DrawOverFilter());
+  itk::ImageRegionConstIterator<itk::Image<LabelType, 3> > it_src(mask, r);
+  for(; !it_trg.IsAtEnd(); ++it_trg, ++it_src)
+    if(it_src.Get() != 0)
+      it_trg.PaintAsForeground();
+
+  if(it_trg.Finalize(undoTitle.c_str()))
+    InvokeEvent(SegmentationChangeEvent());
+
+  return it_trg.GetNumberOfChangedVoxels();
+}
+
 inline LabelType
 IRISApplication ::DrawOverLabel(LabelType iTarget)
 {

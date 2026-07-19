@@ -362,6 +362,19 @@ public:
                                     const std::string  &undoTitle);
 
   /**
+   * Apply an external binary/label mask (nonzero = foreground) to the selected
+   * segmentation layer, painting the given label wherever the mask is nonzero,
+   * as a single committed edit through the normal update path (audit captured,
+   * SegmentationChangeEvent fired). The mask is a plain itk::Image so it can be
+   * read straight from a file; it must share the segmentation's voxel grid (the
+   * overlap region is used). This is the agent-callable "apply a proposed
+   * segmentation" entry point. Returns the number of voxels changed.
+   */
+  unsigned int PaintMaskWithLabel(const itk::Image<LabelType, 3> *mask,
+                                  LabelType                       label,
+                                  const std::string              &undoTitle);
+
+  /**
    * Update the SNAP image data with an external segmentation image (e.g.,
    * loaded from a file).
    *

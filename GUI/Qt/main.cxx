@@ -21,6 +21,8 @@
 #include "GlobalUIModel.h"
 
 #include "itkObject.h"
+#include "itkImage.h"
+#include "itkImageFileReader.h"
 #include "vtkObject.h"
 
 #include <QtCore/qlibraryinfo.h>
@@ -1574,6 +1576,64 @@ main(int argc, char *argv[])
                   }
                   resp["ok"] = true;
                   resp["result"] = r;
+                }
+              }
+              else if (cmd == "apply_seg_file")
+              {
+                // Apply a REAL proposed segmentation: read a binary/label mask
+                // NIfTI from disk and paint `label` where it is nonzero, through
+                // the commit path (audit captured, tagged with the armed actor).
+                // This is the agent's "apply the model's proposal" step.
+                if (!driver->IsMainImageLoaded())
+                {
+                  resp["ok"] = false; resp["error"] = "no image loaded";
+                }
+                else if (!driver->GetSelectedSegmentationLayer())
+                {
+                  resp["ok"] = false; resp["error"] = "no segmentation layer";
+                }
+                else
+                {
+                  QJsonObject a = req.value("args").toObject();
+                  std::string path = a.value("path").toString().toStdString();
+                  LabelType   label = (LabelType) a.value("label").toInt(1);
+
+                  typedef itk::Image<LabelType, 3> MaskImageType;
+                  itk::ImageFileReader<MaskImageType>::Pointer reader =
+                    itk::ImageFileReader<MaskImageType>::New();
+                  reader->SetFileName(path);
+                  bool read_ok = true;
+                  std::string read_err;
+                  try { reader->Update(); }
+                  catch (itk::ExceptionObject &e) { read_ok = false; read_err = e.what(); }
+
+                  if (!read_ok)
+                  {
+                    resp["ok"] = false;
+                    resp["error"] = QString("read failed: %1")
+                                      .arg(QString::fromStdString(read_err));
+                  }
+                  else
+                  {
+                    unsigned int n = driver->PaintMaskWithLabel(
+                      reader->GetOutput(), label, "Agent apply (proposal)");
+                    QJsonObject r;
+                    r["changed_voxels"] = (int) n;
+                    if (n > 0)
+                    {
+                      std::string js = driver->GetLastSegmentationAuditRecordJSON();
+                      QJsonDocument doc =
+                        QJsonDocument::fromJson(QString::fromStdString(js).toUtf8());
+                      r["audit"] = doc.isObject() ? QJsonValue(doc.object())
+                                                  : QJsonValue(QJsonValue::Null);
+                    }
+                    else
+                    {
+                      r["audit"] = QJsonValue(QJsonValue::Null);
+                    }
+                    resp["ok"] = true;
+                    resp["result"] = r;
+                  }
                 }
               }
               else if (cmd == "get_audit")
