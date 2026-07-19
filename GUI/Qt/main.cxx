@@ -1528,6 +1528,54 @@ main(int argc, char *argv[])
                   resp["ok"] = true;
                 }
               }
+              else if (cmd == "apply_box")
+              {
+                // Apply a labeled axis-aligned box through the real commit path
+                // -- the P2 "agent applies a proposal" beat. Produces an audit
+                // record (tagged with the armed actor) and returns it inline.
+                if (!driver->IsMainImageLoaded())
+                {
+                  resp["ok"] = false; resp["error"] = "no image loaded";
+                }
+                else if (!driver->GetSelectedSegmentationLayer())
+                {
+                  resp["ok"] = false; resp["error"] = "no segmentation layer";
+                }
+                else
+                {
+                  QJsonObject a = req.value("args").toObject();
+                  int x0 = a.value("x0").toInt(), y0 = a.value("y0").toInt(), z0 = a.value("z0").toInt();
+                  int x1 = a.value("x1").toInt(), y1 = a.value("y1").toInt(), z1 = a.value("z1").toInt();
+                  itk::Index<3> idx;
+                  itk::Size<3>  sz;
+                  idx[0] = x0 < x1 ? x0 : x1; sz[0] = (x0 < x1 ? x1 - x0 : x0 - x1) + 1;
+                  idx[1] = y0 < y1 ? y0 : y1; sz[1] = (y0 < y1 ? y1 - y0 : y0 - y1) + 1;
+                  idx[2] = z0 < z1 ? z0 : z1; sz[2] = (z0 < z1 ? z1 - z0 : z0 - z1) + 1;
+                  itk::ImageRegion<3> region(idx, sz);
+                  LabelType label = (LabelType) a.value("label").toInt();
+                  unsigned int n = driver->PaintRegionWithLabel(region, label, "Agent apply (box)");
+
+                  QJsonObject r;
+                  r["changed_voxels"] = (int) n;
+                  // Only surface an audit record if this call actually committed
+                  // an edit; otherwise the "last record" would be a stale one
+                  // from a previous commit.
+                  if (n > 0)
+                  {
+                    std::string js = driver->GetLastSegmentationAuditRecordJSON();
+                    QJsonDocument doc =
+                      QJsonDocument::fromJson(QString::fromStdString(js).toUtf8());
+                    r["audit"] = doc.isObject() ? QJsonValue(doc.object())
+                                                : QJsonValue(QJsonValue::Null);
+                  }
+                  else
+                  {
+                    r["audit"] = QJsonValue(QJsonValue::Null);
+                  }
+                  resp["ok"] = true;
+                  resp["result"] = r;
+                }
+              }
               else if (cmd == "get_audit")
               {
                 // Return the structured audit record for the most recent

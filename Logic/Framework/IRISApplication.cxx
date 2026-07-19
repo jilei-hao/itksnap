@@ -573,6 +573,33 @@ IRISApplication::GetLastSegmentationAuditRecordJSON() const
   return "null";
 }
 
+unsigned int
+IRISApplication::PaintRegionWithLabel(const RegionType  &region,
+                                      LabelType          label,
+                                      const std::string &undoTitle)
+{
+  LabelImageWrapper *seg = this->GetSelectedSegmentationLayer();
+  if(!seg)
+    return 0;
+
+  // Clip the requested region to the segmentation grid; bail if fully outside.
+  RegionType r = region;
+  if(!r.Crop(seg->GetBufferedRegion()))
+    return 0;
+
+  // Paint the explicit label over everything in the region (PAINT_OVER_ALL is
+  // the DrawOverFilter default), committing through the normal edit path so the
+  // audit record is captured in LabelImageWrapper::StoreUndoPoint.
+  SegmentationUpdateIterator it(seg, r, label, DrawOverFilter());
+  for(; !it.IsAtEnd(); ++it)
+    it.PaintAsForeground();
+
+  if(it.Finalize(undoTitle.c_str()))
+    InvokeEvent(SegmentationChangeEvent());
+
+  return it.GetNumberOfChangedVoxels();
+}
+
 inline LabelType
 IRISApplication ::DrawOverLabel(LabelType iTarget)
 {

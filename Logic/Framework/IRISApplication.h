@@ -350,6 +350,18 @@ public:
   std::string GetLastSegmentationAuditRecordJSON() const;
 
   /**
+   * Paint an axis-aligned voxel region of the selected segmentation layer with
+   * the given label, as a single committed edit through the normal segmentation
+   * update path (so the audit record is captured and SegmentationChangeEvent
+   * fires). Honors the armed actor (see SetNextSegmentationCommitActor). Returns
+   * the number of voxels actually changed. This is the agent-callable "apply a
+   * proposal" entry point behind the live command channel.
+   */
+  unsigned int PaintRegionWithLabel(const RegionType   &region,
+                                    LabelType           label,
+                                    const std::string  &undoTitle);
+
+  /**
    * Update the SNAP image data with an external segmentation image (e.g.,
    * loaded from a file).
    *
