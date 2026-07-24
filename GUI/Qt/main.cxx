@@ -1649,6 +1649,23 @@ main(int argc, char *argv[])
                 resp["result"] = doc.isObject() ? QJsonValue(doc.object())
                                                 : QJsonValue(QJsonValue::Null);
               }
+              else if (cmd == "get_audit_log")
+              {
+                // Return every audit record currently in effect, not just the
+                // newest one: a human correcting several labels in one sitting
+                // produces one commit per label, and the agent must see them
+                // all. The optional "since" cursor (the "total" from a previous
+                // call) limits the reply to records added since that call.
+                QJsonObject a = req.value("args").toObject();
+                int    since_arg = a.value("since").toInt(0);
+                size_t since = since_arg > 0 ? (size_t) since_arg : 0;
+                std::string js = driver->GetSegmentationAuditLogJSON(since);
+                QJsonDocument doc =
+                  QJsonDocument::fromJson(QString::fromStdString(js).toUtf8());
+                resp["ok"] = true;
+                resp["result"] = doc.isObject() ? QJsonValue(doc.object())
+                                                : QJsonValue(QJsonValue::Null);
+              }
               else if (cmd == "set_labels")
               {
                 // Set the descriptive name (and optionally the RGB color) of one

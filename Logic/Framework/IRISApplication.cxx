@@ -573,6 +573,33 @@ IRISApplication::GetLastSegmentationAuditRecordJSON() const
   return "null";
 }
 
+std::string
+IRISApplication::GetSegmentationAuditLogJSON(size_t since) const
+{
+  LabelImageWrapper *seg = this->GetSelectedSegmentationLayer();
+
+  std::ostringstream oss;
+  oss << "{\"since\":" << since << ",\"total\":";
+
+  if(!seg)
+    {
+    oss << 0 << ",\"records\":[]}";
+    return oss.str();
+    }
+
+  const std::vector<SegmentationAuditRecord> &log = seg->GetAuditLog();
+  oss << log.size() << ",\"records\":[";
+  for(size_t i = since; i < log.size(); ++i)
+    {
+    if(i > since)
+      oss << ",";
+    oss << log[i].ToJSON();
+    }
+  oss << "]}";
+
+  return oss.str();
+}
+
 unsigned int
 IRISApplication::PaintRegionWithLabel(const RegionType  &region,
                                       LabelType          label,

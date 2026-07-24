@@ -105,7 +105,9 @@ public:
   const SegmentationAuditRecord &GetLastAuditRecord() const
     { return m_LastAuditRecord; }
 
-  /** The full ordered log of audit records for this wrapper's lifetime. */
+  /** The ordered log of audit records for the edits currently *in effect*.
+   *  Undone edits are removed (and restored by Redo), so the log always
+   *  describes the segmentation as it now stands. */
   const std::vector<SegmentationAuditRecord> &GetAuditLog() const
     { return m_AuditLog; }
 
@@ -149,6 +151,17 @@ protected:
   SegmentationAuditRecord              m_LastAuditRecord;
   bool                                 m_HasLastAuditRecord = false;
   std::vector<SegmentationAuditRecord> m_AuditLog;
+
+  // Records for edits that have been undone, kept so Redo can restore them to
+  // m_AuditLog. Both stacks are LIFO per time point (see MoveAuditRecord).
+  std::vector<SegmentationAuditRecord> m_UndoneAuditRecords;
+
+  /** Move the newest record for the current time point from \p from to \p to.
+   *  Undo/Redo are per-time-point LIFO, so the newest matching record is the
+   *  one the commit being undone/redone produced. Returns false if there is no
+   *  matching record (e.g. it aged out of the bounded log). */
+  bool MoveAuditRecord(std::vector<SegmentationAuditRecord> &from,
+                       std::vector<SegmentationAuditRecord> &to);
 };
 
 #endif // LABELIMAGEWRAPPER_H
