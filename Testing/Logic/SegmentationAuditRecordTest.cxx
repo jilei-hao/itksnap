@@ -292,6 +292,60 @@ int main(int, char *[])
     delete delta;
   }
 
+  // ---- Scenario 5: the log tracks undo/redo ----------------------------
+  // The log must describe the edits *in effect*: an undone edit has to leave
+  // it (or an agent reading the whole log would be told about a correction the
+  // human rolled back) and come back on redo. Temporary commits never enter the
+  // log, so undoing one must not pop the genuine record beneath it.
+  {
+    typedef LabelImageWrapper::Image4DType Image4DType;
+    Image4DType::Pointer img4d = Image4DType::New();
+    Image4DType::RegionType r4;
+    r4.SetIndex({{0, 0, 0, 0}});
+    r4.SetSize({{4, 4, 4, 1}});
+    img4d->SetRegions(r4);
+    img4d->Allocate();
+    img4d->FillBuffer(0);
+
+    SmartPtr<LabelImageWrapper> wrapper = LabelImageWrapper::New();
+    wrapper->UpdateWrappedImages(img4d);
+
+    LabelImageWrapper::ImageType *img = wrapper->GetModifiableImage();
+    itk::Index<3> lo1 = {{0, 0, 0}}, hi1 = {{1, 1, 1}};
+    itk::Index<3> lo2 = {{2, 2, 2}}, hi2 = {{3, 3, 3}};
+
+    wrapper->StoreUndoPoint("Edit A", PaintBox(img, 1, lo1, hi1));
+    wrapper->StoreUndoPoint("Edit B", PaintBox(img, 2, lo2, hi2));
+
+    CHECK(wrapper->GetAuditLog().size() == 2, "log should hold both edits");
+    CHECK(wrapper->GetAuditLog().back().op == "Edit B", "newest record is Edit B");
+    CHECK(wrapper->HasLastAuditRecord(), "last record valid after commits");
+
+    // Undo B: it is no longer in effect, so it must leave the log.
+    wrapper->Undo();
+    CHECK(wrapper->GetAuditLog().size() == 1, "undo should drop the undone edit");
+    CHECK(wrapper->GetAuditLog().back().op == "Edit A", "Edit A remains after undo");
+    CHECK(!wrapper->HasLastAuditRecord(), "last record invalidated by undo");
+
+    // Redo B: in effect again, so it returns and becomes the newest record.
+    wrapper->Redo();
+    CHECK(wrapper->GetAuditLog().size() == 2, "redo should restore the record");
+    CHECK(wrapper->GetAuditLog().back().op == "Edit B", "restored record is Edit B");
+    CHECK(wrapper->HasLastAuditRecord(), "last record valid again after redo");
+
+    // A temporary commit is not audit-worthy; undoing it must leave the log alone.
+    wrapper->StoreUndoPoint("Temporary undo point", PaintBox(img, 3, lo1, hi1));
+    CHECK(wrapper->GetAuditLog().size() == 2, "temporary commit stays out of the log");
+    wrapper->Undo();
+    CHECK(wrapper->GetAuditLog().size() == 2,
+          "undoing a temporary commit must not pop a real record");
+    CHECK(wrapper->GetAuditLog().back().op == "Edit B",
+          "Edit B survives the temporary commit's undo");
+
+    std::cout << "scenario5 log size after undo/redo: "
+              << wrapper->GetAuditLog().size() << std::endl;
+  }
+
   if (g_failures == 0)
     std::cout << "SegmentationAuditRecordTest: ALL PASS" << std::endl;
   else

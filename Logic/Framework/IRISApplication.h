@@ -350,6 +350,21 @@ public:
   std::string GetLastSegmentationAuditRecordJSON() const;
 
   /**
+   * Return the audit records for the edits currently in effect on the selected
+   * segmentation layer, serialized as a JSON object:
+   *
+   *   {"since": S, "total": N, "records": [ {...}, ... ]}
+   *
+   * Records before index \p since are omitted, so an agent can poll for "what
+   * changed since I last looked" by passing back the previous \c total as its
+   * cursor -- the case where a human corrects several labels in one sitting and
+   * every correction, not just the newest, must reach the agent. \c total is
+   * the full log length regardless of \p since. Returns an empty log if no
+   * segmentation is loaded.
+   */
+  std::string GetSegmentationAuditLogJSON(size_t since = 0) const;
+
+  /**
    * Paint an axis-aligned voxel region of the selected segmentation layer with
    * the given label, as a single committed edit through the normal segmentation
    * update path (so the audit record is captured and SegmentationChangeEvent

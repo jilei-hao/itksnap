@@ -136,6 +136,25 @@ bool LabelImageWrapper::StoreUndoPoint(const char *text, UndoManagerDelta *delta
   return n_rles > 0;
 }
 
+bool LabelImageWrapper::MoveAuditRecord(std::vector<SegmentationAuditRecord> &from,
+                                        std::vector<SegmentationAuditRecord> &to)
+{
+  // Search backwards for the newest record belonging to the current time point:
+  // each time point has its own undo manager, so the record produced by the
+  // commit being undone/redone is the last one logged against this time point.
+  for(std::vector<SegmentationAuditRecord>::reverse_iterator it = from.rbegin();
+      it != from.rend(); ++it)
+    {
+    if(it->time_point == (int) m_TimePointIndex)
+      {
+      to.push_back(*it);
+      from.erase((it + 1).base());
+      return true;
+      }
+    }
+  return false;
+}
+
 void LabelImageWrapper::ClearUndoPoints()
 {
   UndoManagerType *um = m_TimePointUndoManagers[m_TimePointIndex];
@@ -143,6 +162,7 @@ void LabelImageWrapper::ClearUndoPoints()
 
   // Keep the audit trail consistent with the (now-empty) undo history.
   m_AuditLog.clear();
+  m_UndoneAuditRecords.clear();
   m_HasLastAuditRecord = false;
 }
 
@@ -152,6 +172,7 @@ void LabelImageWrapper::ClearUndoPointsForAllTimePoints()
     um->Clear();
 
   m_AuditLog.clear();
+  m_UndoneAuditRecords.clear();
   m_HasLastAuditRecord = false;
 }
 
@@ -202,6 +223,13 @@ void LabelImageWrapper::Undo()
   // longer reflects the current segmentation state. Invalidate it: get_audit
   // reports the last committed edit *in effect*, not one that was undone.
   m_HasLastAuditRecord = false;
+
+  // Drop the reverted edit from the log as well, so a caller reading the whole
+  // log is never told about an edit that is no longer in effect. Temporary
+  // commits never entered the log (see StoreUndoPoint), so undoing one must not
+  // pop the genuine record beneath it. Retained for Redo().
+  if(commit.GetName() != TEMPORARY_UNDO_POINT_NAME)
+    this->MoveAuditRecord(m_AuditLog, m_UndoneAuditRecords);
 }
 
 bool LabelImageWrapper::IsRedoPossible()
@@ -246,6 +274,18 @@ void LabelImageWrapper::Redo()
 
   // Set modified flags
   this->PixelsModified();
+
+  // The edit is in effect again, so restore its record to the log and make it
+  // the "last" record once more -- get_audit/get_audit_log stay in step with
+  // undo/redo rather than only with undo.
+  if(commit.GetName() != TEMPORARY_UNDO_POINT_NAME)
+    {
+    if(this->MoveAuditRecord(m_UndoneAuditRecords, m_AuditLog))
+      {
+      m_LastAuditRecord = m_AuditLog.back();
+      m_HasLastAuditRecord = true;
+      }
+    }
 }
 
 const
