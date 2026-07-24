@@ -31,6 +31,7 @@
 #include <QLocalSocket>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QDebug>
 #include <iostream>
 #include <clocale>
@@ -1647,6 +1648,71 @@ main(int argc, char *argv[])
                 resp["ok"] = true;
                 resp["result"] = doc.isObject() ? QJsonValue(doc.object())
                                                 : QJsonValue(QJsonValue::Null);
+              }
+              else if (cmd == "set_labels")
+              {
+                // Set the descriptive name (and optionally the RGB color) of one
+                // or more segmentation labels in the LIVE label table -- the same
+                // primitive the label editor uses (GetColorLabel -> SetLabel ->
+                // SetColorLabel), so the open editor + slice/mesh views refresh.
+                // A label rename is configuration, not an undoable segmentation
+                // edit, so no audit record is produced.
+                ColorLabelTable *clt = driver->GetColorLabelTable();
+                QJsonObject a = req.value("args").toObject();
+                QJsonArray labels = a.value("labels").toArray();
+                QJsonArray updated;
+                for (const QJsonValue &lv : labels)
+                {
+                  QJsonObject lo = lv.toObject();
+                  int id = lo.value("id").toInt();
+                  if (id <= 0)
+                    continue;
+                  ColorLabel cl = clt->GetColorLabel((size_t) id);
+                  if (lo.contains("name"))
+                    cl.SetLabel(lo.value("name").toString().toStdString().c_str());
+                  if (lo.contains("color"))
+                  {
+                    QJsonArray c = lo.value("color").toArray();
+                    if (c.size() == 3)
+                      cl.SetRGB((unsigned char) c[0].toInt(),
+                                (unsigned char) c[1].toInt(),
+                                (unsigned char) c[2].toInt());
+                  }
+                  clt->SetColorLabel((size_t) id, cl);
+                  updated.append(id);
+                }
+                QJsonObject r;
+                r["updated"] = updated;
+                resp["ok"] = true;
+                resp["result"] = r;
+              }
+              else if (cmd == "get_labels")
+              {
+                // Read back the live label table so an agent can verify the
+                // id -> anatomy-name mapping it applied.
+                ColorLabelTable *clt = driver->GetColorLabelTable();
+                QJsonArray out;
+                const ColorLabelTable::ValidLabelMap &valmap = clt->GetValidLabels();
+                for (ColorLabelTable::ValidLabelConstIterator it = valmap.begin();
+                     it != valmap.end(); ++it)
+                {
+                  if (it->first == 0)
+                    continue;
+                  const ColorLabel &cl = it->second;
+                  QJsonObject lo;
+                  lo["id"] = (int) it->first;
+                  lo["name"] = QString::fromUtf8(cl.GetLabel());
+                  QJsonArray color;
+                  color.append((int) cl.GetRGB(0));
+                  color.append((int) cl.GetRGB(1));
+                  color.append((int) cl.GetRGB(2));
+                  lo["color"] = color;
+                  lo["visible"] = cl.IsVisible();
+                  lo["alpha"] = (int) cl.GetAlpha();
+                  out.append(lo);
+                }
+                resp["ok"] = true;
+                resp["result"] = out;
               }
               else
               {

@@ -133,6 +133,9 @@ int usage(int rc)
   cout << "  -labels-clear                     : Remove all labels except the default clear label" << endl;
   cout << "  -labels-add <file> [offst] [ptrn] : Add labels from file, optionally shifting by offset and" << endl;
   cout << "                                      renaming with C printf pattern (e.g. 'left %s')" << endl;
+  cout << "  -labels-set-name <id> <name>      : Set the descriptive name of one label (color preserved)" << endl;
+  cout << "  -labels-set-color <id> <r> <g> <b>: Set the RGB color (0..255) of one label (name preserved)" << endl;
+  cout << "  -labels-list                      : List labels as 'id<TAB>name<TAB>r<TAB>g<TAB>b'" << endl;
   cout << "Annotation object commands" << endl;
   cout << "  -annot-list                       : List all annotations in the workspace" << endl;
   cout << "Distributed segmentation server (DSS) user commands: " << endl;
@@ -778,6 +781,27 @@ int main(int argc, char *argv[])
       else if (arg == "-labels-clear")
         {
         ws.ClearLabels();
+        }
+
+      else if(arg == "-labels-set-name")
+        {
+        int id = cl.read_integer();
+        string name = cl.read_string();
+        ws.SetLabelName(id, name);
+        }
+
+      else if(arg == "-labels-set-color")
+        {
+        int id = cl.read_integer();
+        int r = cl.read_integer();
+        int g = cl.read_integer();
+        int b = cl.read_integer();
+        ws.SetLabelColor(id, r, g, b);
+        }
+
+      else if(arg == "-labels-list")
+        {
+        ws.PrintLabels(cout, prefix);
         }
 
       else if(arg == "-tags-add" || arg == "-ta")

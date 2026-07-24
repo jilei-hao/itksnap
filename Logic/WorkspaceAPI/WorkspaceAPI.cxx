@@ -1040,6 +1040,61 @@ void WorkspaceAPI::ClearLabels()
   clt->SaveToRegistry(main.Folder("ProjectMetaData.IRIS.LabelTable"));
 }
 
+void WorkspaceAPI::SetLabelName(int id, const string &name)
+{
+  // Load the current label table, mutate the one label, and write it back so
+  // that the label's color and other attributes are preserved.
+  Registry &label_reg =
+      m_Registry.Folder(this->GetMainLayerKey()).Folder("ProjectMetaData.IRIS.LabelTable");
+  SmartPtr<ColorLabelTable> clt = ColorLabelTable::New();
+  clt->LoadFromRegistry(label_reg);
+
+  // GetColorLabel returns the existing label, or the deterministic default for
+  // this id if it is not yet defined -- so naming a new label works too.
+  ColorLabel cl = clt->GetColorLabel(id);
+  cl.SetLabel(name.c_str());
+  clt->SetColorLabel(id, cl);
+
+  label_reg.Clear();
+  clt->SaveToRegistry(label_reg);
+}
+
+void WorkspaceAPI::SetLabelColor(int id, int r, int g, int b)
+{
+  Registry &label_reg =
+      m_Registry.Folder(this->GetMainLayerKey()).Folder("ProjectMetaData.IRIS.LabelTable");
+  SmartPtr<ColorLabelTable> clt = ColorLabelTable::New();
+  clt->LoadFromRegistry(label_reg);
+
+  ColorLabel cl = clt->GetColorLabel(id);
+  cl.SetRGB((unsigned char) r, (unsigned char) g, (unsigned char) b);
+  clt->SetColorLabel(id, cl);
+
+  label_reg.Clear();
+  clt->SaveToRegistry(label_reg);
+}
+
+void WorkspaceAPI::PrintLabels(std::ostream &os, const string &line_prefix)
+{
+  Registry &label_reg =
+      m_Registry.Folder(this->GetMainLayerKey()).Folder("ProjectMetaData.IRIS.LabelTable");
+  SmartPtr<ColorLabelTable> clt = ColorLabelTable::New();
+  clt->LoadFromRegistry(label_reg);
+
+  // Machine-parseable: id<TAB>name<TAB>r<TAB>g<TAB>b, one valid (non-clear)
+  // label per line.
+  const ColorLabelTable::ValidLabelMap &valmap = clt->GetValidLabels();
+  for(ColorLabelTable::ValidLabelConstIterator it = valmap.begin(); it != valmap.end(); ++it)
+    {
+    if(it->first == 0)
+      continue;
+    const ColorLabel &cl = it->second;
+    os << line_prefix << (int) it->first << '\t' << cl.GetLabel() << '\t'
+       << (int) cl.GetRGB(0) << '\t' << (int) cl.GetRGB(1) << '\t' << (int) cl.GetRGB(2)
+       << std::endl;
+    }
+}
+
 const Registry &WorkspaceAPI::GetRegistry() const
 {
   return m_Registry;

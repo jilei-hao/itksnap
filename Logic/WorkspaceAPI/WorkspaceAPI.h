@@ -233,6 +233,26 @@ public:
   /** Reset the labels - leaves only the clear label */
   void ClearLabels();
 
+  /**
+   * Set the descriptive name of a single label, preserving its color and other
+   * attributes. If the label id is not yet defined, it is created from the
+   * default (deterministic) appearance for that id and then named.
+   */
+  void SetLabelName(int id, const std::string &name);
+
+  /**
+   * Set the RGB color (each component 0..255) of a single label, preserving its
+   * name and other attributes. Creates the label from its default appearance
+   * first if it is not yet defined.
+   */
+  void SetLabelColor(int id, int r, int g, int b);
+
+  /**
+   * Print the valid (non-clear) labels, one per line, as tab-separated
+   * "id<TAB>name<TAB>r<TAB>g<TAB>b" -- a machine-parseable listing.
+   */
+  void PrintLabels(std::ostream &os, const std::string &line_prefix = "");
+
   /** Get the project registry by reference */
   const Registry &GetRegistry() const;
 
