@@ -1320,7 +1320,7 @@ MARK_AS_ADVANCED(SNAP_GUI_TEST_ACCEL)
 SET(GUI_TESTS
   Workspace
   NaNs
-  4DContinuousRenderingD
+  4DContinuousRendering
   DiffSpace
   EdgeAttraction
   EchoCartesianDicomLoading

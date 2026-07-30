@@ -409,7 +409,7 @@ void TestWorker::wait(unsigned int msec)
   msleep(msec);
 }
 
-void TestWorker::readScript(QString script_url, QString &script)
+bool TestWorker::readScript(QString script_url, QString &script)
 {
   // Find the script file corresponding to the test
   QFile file(script_url);
@@ -417,6 +417,12 @@ void TestWorker::readScript(QString script_url, QString &script)
     {
     qWarning() << QString("Unable to read test script %1").arg(script_url);
     SNAPTestQt::application_exit(SNAPTestQt::NO_SUCH_TEST);
+
+    // application_exit() only queues a quit on the event loop, so it does not
+    // stop us here. Without this return we would fall through, read an empty
+    // script off the unopened file, and the caller would report success --
+    // making any test with a missing script silently pass.
+    return false;
     }
 
   // Read the script
@@ -447,7 +453,13 @@ void TestWorker::readScript(QString script_url, QString &script)
 
       qDebug() << "Including : " << child_url;
 
-      this->readScript(child_url, script);
+      // Propagate a missing include: a test built from a script we could not
+      // fully assemble must not be reported as passing.
+      if(!this->readScript(child_url, script))
+        {
+        file.close();
+        return false;
+        }
       line = "";
       }
 
@@ -457,6 +469,7 @@ void TestWorker::readScript(QString script_url, QString &script)
 
   // Close the file
   file.close();
+  return true;
 }
 
 void TestWorker::source(QString script_url)
@@ -469,7 +482,12 @@ void TestWorker::source(QString script_url)
   qDebug() << "Running test: " << script_url;
 
   QString script;
-  this->readScript(script_url, script);
+  if(!this->readScript(script_url, script))
+    {
+    // readScript() has already queued application_exit(NO_SUCH_TEST). Returning
+    // here keeps us from queuing a later SUCCESS that would override it.
+    return;
+    }
 
   // Execute it
   QJSValue rc = m_Engine->evaluate(script);
