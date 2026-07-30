@@ -122,6 +122,9 @@ public:
   /** A model for the current timepoint nickname */
   irisSimplePropertyAccessMacro(CrntTimePointNickname, std::string)
 
+  /** A read-only model for the current timepoint cardiac phase (%R-R) */
+  irisReadOnlySimplePropertyAccessMacro(CrntTimePointCardiacPhase, std::string)
+
   /** A model for the current timepoint taglist */
   irisSimplePropertyAccessMacro(CrntTimePointTagList, TagList)
 
@@ -214,6 +217,10 @@ protected:
   SmartPtr<AbstractSimpleStringProperty> m_CrntTimePointNicknameModel;
   bool GetCrntTimePointNicknameValue(std::string &value);
   void SetCrntTimePointNicknameValue(std::string value);
+
+  // Current time point cardiac phase (%R-R), read-only display
+  SmartPtr<AbstractSimpleStringProperty> m_CrntTimePointCardiacPhaseModel;
+  bool GetCrntTimePointCardiacPhaseValue(std::string &value);
 
   // Current time point tags
   SmartPtr<AbstractSimpleTagListProperty> m_CrntTimePointTagListModel;

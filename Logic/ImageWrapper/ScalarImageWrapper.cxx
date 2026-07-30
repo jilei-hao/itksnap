@@ -350,20 +350,19 @@ ScalarImageWrapper<TTraits>
 ::WriteToFileAsFloat(const char *fname, Registry &hints)
 {
   SmartPtr<GuidedNativeImageIO> io = GuidedNativeImageIO::New();
-  io->CreateImageIO(fname, hints, false);
-  itk::ImageIOBase *base = io->GetIOBase();
 
   // Create a pipeline that casts the image to floating type
   auto *float_img = this->CreateCastToFloatPipeline("WriteToFileAsFloat");
 
-  typedef typename ImageWrapperBase::FloatImageType FloatImageType;
-  typedef itk::ImageFileWriter<FloatImageType> WriterType;
-  SmartPtr<WriterType> writer = WriterType::New();
-  writer->SetFileName(fname);
-  if(base)
-    writer->SetImageIO(base);
-  writer->SetInput(float_img);
-  writer->Update();
+  // Carry the source metadata forward (the cast pipeline drops the dictionary)
+  // so the unified write path can curate it to the non-PHI allow-list and emit
+  // any cardiac sidecar.
+  float_img->SetMetaDataDictionary(this->GetImage4DBase()->GetMetaDataDictionary());
+
+  // Route through the single authoritative write path (format selection, non-PHI
+  // metadata curation, .seq.nrrd, cardiac JSON sidecar) instead of writing
+  // directly, so the float path behaves like the internal-format path.
+  io->SaveImage(fname, hints, float_img);
 
   // Release the pipeline (what a pain)
   this->ReleaseInternalPipeline("WriteToFileAsFloat");
