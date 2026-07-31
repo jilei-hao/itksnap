@@ -23,7 +23,7 @@ cmake --build <build> --target ITK-SNAP --parallel
 cmake --build <build> --target itksnap-wt --parallel
 ```
 
-Configure a new build from scratch (requires ITK ≥ 5.4, VTK ≥ 9.3.1, Qt6):
+Configure a new build from scratch (requires ITK ≥ 5.4, VTK ≥ 9.5.2, Qt6):
 ```sh
 cmake -G <generator> <path-to-itksnap-source> \
   -DITK_DIR=<itk-build> -DVTK_DIR=<vtk-build> \
