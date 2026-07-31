@@ -98,8 +98,11 @@ public:
 
   TestObjectProxy(QObject *target, QObject *parent);
 
-  // The wrapped object. Only safe to dereference on the GUI thread.
-  QObject *target() const { return m_Target.data(); }
+  // The wrapped object. Aborts unless we are on the GUI thread: this is the one
+  // place the application's own objects become reachable, so asserting here
+  // catches a marshalling step dropped in a future edit even if the assertion
+  // inside that step went with it.
+  QObject *target() const;
 
   // Property accessors backing the Q_PROPERTYs above. Not slots, so they do not
   // become part of the script-visible method surface.

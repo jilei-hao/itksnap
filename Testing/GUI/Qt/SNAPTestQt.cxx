@@ -79,6 +79,12 @@ TestObjectProxy::TestObjectProxy(QObject *target, QObject *parent)
 {
 }
 
+QObject *TestObjectProxy::target() const
+{
+  SNAPTestQt::AssertOnGuiThread("TestObjectProxy::target");
+  return m_Target.data();
+}
+
 bool TestObjectProxy::checkTarget(const char *what) const
 {
   if(m_Target.isNull())
@@ -93,13 +99,11 @@ QVariant TestObjectProxy::getProperty(const char *name) const
 {
   QVariant result;
   QByteArray prop(name);
-  QPointer<QObject> target = m_Target;
 
   // const_cast: we are only using ourselves as the thread context to hop to
   RunOnOwnerThreadAndWait(const_cast<TestObjectProxy *>(this), [&]() {
-    SNAPTestQt::AssertOnGuiThread(prop.constData());
     if(this->checkTarget(prop.constData()))
-      result = target->property(prop.constData());
+      result = this->target()->property(prop.constData());
     });
 
   return result;
@@ -113,12 +117,10 @@ void TestObjectProxy::syncWithGuiThread()
 void TestObjectProxy::setProperty_(const char *name, const QVariant &value)
 {
   QByteArray prop(name);
-  QPointer<QObject> target = m_Target;
 
-  QMetaObject::invokeMethod(this, [this, target, prop, value]() {
-    SNAPTestQt::AssertOnGuiThread(prop.constData());
+  QMetaObject::invokeMethod(this, [this, prop, value]() {
     if(this->checkTarget(prop.constData()))
-      target->setProperty(prop.constData(), value);
+      this->target()->setProperty(prop.constData(), value);
     }, Qt::QueuedConnection);
 
   syncWithGuiThread();
@@ -127,12 +129,10 @@ void TestObjectProxy::setProperty_(const char *name, const QVariant &value)
 void TestObjectProxy::invokeSlot(const char *slot)
 {
   QByteArray name(slot);
-  QPointer<QObject> target = m_Target;
 
-  QMetaObject::invokeMethod(this, [this, target, name]() {
-    SNAPTestQt::AssertOnGuiThread(name.constData());
+  QMetaObject::invokeMethod(this, [this, name]() {
     if(this->checkTarget(name.constData()))
-      QMetaObject::invokeMethod(target.data(), name.constData(), Qt::DirectConnection);
+      QMetaObject::invokeMethod(this->target(), name.constData(), Qt::DirectConnection);
     }, Qt::QueuedConnection);
 
   syncWithGuiThread();
@@ -170,12 +170,9 @@ void TestObjectProxy::set(QString property_name, QVariant value)
 
 void TestObjectProxy::setCurrentIndex(int index)
 {
-  QPointer<QObject> target = m_Target;
-
-  QMetaObject::invokeMethod(this, [this, target, index]() {
-    SNAPTestQt::AssertOnGuiThread("setCurrentIndex");
+  QMetaObject::invokeMethod(this, [this, index]() {
     if(this->checkTarget("setCurrentIndex"))
-      QMetaObject::invokeMethod(target.data(), "setCurrentIndex",
+      QMetaObject::invokeMethod(this->target(), "setCurrentIndex",
                                 Qt::DirectConnection, Q_ARG(int, index));
     }, Qt::QueuedConnection);
 
@@ -184,12 +181,9 @@ void TestObjectProxy::setCurrentIndex(int index)
 
 void TestObjectProxy::setSelected(bool value)
 {
-  QPointer<QObject> target = m_Target;
-
-  QMetaObject::invokeMethod(this, [this, target, value]() {
-    SNAPTestQt::AssertOnGuiThread("setSelected");
+  QMetaObject::invokeMethod(this, [this, value]() {
     if(this->checkTarget("setSelected"))
-      QMetaObject::invokeMethod(target.data(), "setSelected",
+      QMetaObject::invokeMethod(this->target(), "setSelected",
                                 Qt::DirectConnection, Q_ARG(bool, value));
     }, Qt::QueuedConnection);
 
@@ -198,11 +192,9 @@ void TestObjectProxy::setSelected(bool value)
 
 void TestObjectProxy::setCurrentWidget(TestObjectProxy *widget)
 {
-  QPointer<QObject> target = m_Target;
   QPointer<TestObjectProxy> arg(widget);
 
-  QMetaObject::invokeMethod(this, [this, target, arg]() {
-    SNAPTestQt::AssertOnGuiThread("setCurrentWidget");
+  QMetaObject::invokeMethod(this, [this, arg]() {
     QWidget *page = arg ? qobject_cast<QWidget *>(arg->target()) : NULL;
     if(!page)
       {
@@ -210,7 +202,7 @@ void TestObjectProxy::setCurrentWidget(TestObjectProxy *widget)
       return;
       }
     if(this->checkTarget("setCurrentWidget"))
-      QMetaObject::invokeMethod(target.data(), "setCurrentWidget",
+      QMetaObject::invokeMethod(this->target(), "setCurrentWidget",
                                 Qt::DirectConnection, Q_ARG(QWidget *, page));
     }, Qt::QueuedConnection);
 
