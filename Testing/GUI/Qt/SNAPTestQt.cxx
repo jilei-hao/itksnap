@@ -18,6 +18,7 @@
 #include <QDir>
 #include <SNAPQApplication.h>
 #include <QDeadlineTimer>
+#include <QAtomicInt>
 
 
 #include "SNAPQtCommon.h"
@@ -32,26 +33,215 @@
 
 using namespace std;
 
+namespace {
+
+// Set once the test has queued its exit code -- see SNAPTestQt::IsExiting()
+QAtomicInt g_Exiting(0);
+
+/**
+ * Run fn on the thread that owns ctx and wait for it to finish.
+ *
+ * Used for anything that has to return a value. This cannot deadlock against a
+ * modal dialog -- QDialog::exec() runs an event loop, so the posted call is
+ * still delivered -- but it would deadlock if the GUI thread were blocked
+ * outside an event loop, which is why writes and actions are posted instead of
+ * waited on, and why nothing waits once the application is quitting.
+ */
+template <class Func>
+void RunOnOwnerThreadAndWait(QObject *ctx, Func fn)
+{
+  if(!ctx)
+    return;
+
+  if(QThread::currentThread() == ctx->thread())
+    fn();
+  else if(!SNAPTestQt::IsExiting())
+    QMetaObject::invokeMethod(ctx, fn, Qt::BlockingQueuedConnection);
+}
+
+} // namespace
+
+void SNAPTestQt::AssertOnGuiThread(const char *what)
+{
+  if(QThread::currentThread() != QCoreApplication::instance()->thread())
+    qFatal("Test harness: '%s' ran on a worker thread instead of the GUI thread. "
+           "Scripted access to the application must go through TestObjectProxy.", what);
+}
+
+bool SNAPTestQt::IsExiting()
+{
+  return g_Exiting.loadAcquire() != 0;
+}
+
+
+TestObjectProxy::TestObjectProxy(QObject *target, QObject *parent)
+  : QObject(parent), m_Target(target)
+{
+}
+
+bool TestObjectProxy::checkTarget(const char *what) const
+{
+  if(m_Target.isNull())
+    {
+    qWarning() << QString("Test harness: %1 on an object that has been destroyed").arg(what);
+    return false;
+    }
+  return true;
+}
+
+QVariant TestObjectProxy::getProperty(const char *name) const
+{
+  QVariant result;
+  QByteArray prop(name);
+  QPointer<QObject> target = m_Target;
+
+  // const_cast: we are only using ourselves as the thread context to hop to
+  RunOnOwnerThreadAndWait(const_cast<TestObjectProxy *>(this), [&]() {
+    SNAPTestQt::AssertOnGuiThread(prop.constData());
+    if(this->checkTarget(prop.constData()))
+      result = target->property(prop.constData());
+    });
+
+  return result;
+}
+
+void TestObjectProxy::syncWithGuiThread()
+{
+  RunOnOwnerThreadAndWait(this, []() {});
+}
+
+void TestObjectProxy::setProperty_(const char *name, const QVariant &value)
+{
+  QByteArray prop(name);
+  QPointer<QObject> target = m_Target;
+
+  QMetaObject::invokeMethod(this, [this, target, prop, value]() {
+    SNAPTestQt::AssertOnGuiThread(prop.constData());
+    if(this->checkTarget(prop.constData()))
+      target->setProperty(prop.constData(), value);
+    }, Qt::QueuedConnection);
+
+  syncWithGuiThread();
+}
+
+void TestObjectProxy::invokeSlot(const char *slot)
+{
+  QByteArray name(slot);
+  QPointer<QObject> target = m_Target;
+
+  QMetaObject::invokeMethod(this, [this, target, name]() {
+    SNAPTestQt::AssertOnGuiThread(name.constData());
+    if(this->checkTarget(name.constData()))
+      QMetaObject::invokeMethod(target.data(), name.constData(), Qt::DirectConnection);
+    }, Qt::QueuedConnection);
+
+  syncWithGuiThread();
+}
+
+void TestObjectProxy::click()
+{
+  invokeSlot("click");
+}
+
+void TestObjectProxy::toggle()
+{
+  invokeSlot("toggle");
+}
+
+void TestObjectProxy::trigger()
+{
+  invokeSlot("trigger");
+}
+
+void TestObjectProxy::invoke(QString slot)
+{
+  invokeSlot(slot.toUtf8().constData());
+}
+
+QVariant TestObjectProxy::get(QString property_name)
+{
+  return getProperty(property_name.toUtf8().constData());
+}
+
+void TestObjectProxy::set(QString property_name, QVariant value)
+{
+  setProperty_(property_name.toUtf8().constData(), value);
+}
+
+void TestObjectProxy::setCurrentIndex(int index)
+{
+  QPointer<QObject> target = m_Target;
+
+  QMetaObject::invokeMethod(this, [this, target, index]() {
+    SNAPTestQt::AssertOnGuiThread("setCurrentIndex");
+    if(this->checkTarget("setCurrentIndex"))
+      QMetaObject::invokeMethod(target.data(), "setCurrentIndex",
+                                Qt::DirectConnection, Q_ARG(int, index));
+    }, Qt::QueuedConnection);
+
+  syncWithGuiThread();
+}
+
+void TestObjectProxy::setSelected(bool value)
+{
+  QPointer<QObject> target = m_Target;
+
+  QMetaObject::invokeMethod(this, [this, target, value]() {
+    SNAPTestQt::AssertOnGuiThread("setSelected");
+    if(this->checkTarget("setSelected"))
+      QMetaObject::invokeMethod(target.data(), "setSelected",
+                                Qt::DirectConnection, Q_ARG(bool, value));
+    }, Qt::QueuedConnection);
+
+  syncWithGuiThread();
+}
+
+void TestObjectProxy::setCurrentWidget(TestObjectProxy *widget)
+{
+  QPointer<QObject> target = m_Target;
+  QPointer<TestObjectProxy> arg(widget);
+
+  QMetaObject::invokeMethod(this, [this, target, arg]() {
+    SNAPTestQt::AssertOnGuiThread("setCurrentWidget");
+    QWidget *page = arg ? qobject_cast<QWidget *>(arg->target()) : NULL;
+    if(!page)
+      {
+      qWarning() << "Test harness: setCurrentWidget with no target widget";
+      return;
+      }
+    if(this->checkTarget("setCurrentWidget"))
+      QMetaObject::invokeMethod(target.data(), "setCurrentWidget",
+                                Qt::DirectConnection, Q_ARG(QWidget *, page));
+    }, Qt::QueuedConnection);
+
+  syncWithGuiThread();
+}
+
+
 SNAPTestQt::SNAPTestQt(MainImageWindow *win,
     std::string datadir, double accel_factor)
-: m_Acceleration(accel_factor), m_Parent(win)
+: m_Acceleration(accel_factor), m_Worker(NULL), m_Parent(win)
 {
   // We need a dummy parent to prevent self-deletion
   m_DummyParent = new QObject();
   this->setParent(m_DummyParent);
 
+  // Every proxy handed to the script hangs off this object, so they share our
+  // (GUI) thread affinity and are destroyed with us
+  m_ProxyOwner = new QObject();
+
   // Create the script engine
   m_ScriptEngine = new QJSEngine();
 
   // Assign the window as a variable in the script engine
-  QJSValue mwin = m_ScriptEngine->newQObject(win);
+  QJSValue mwin = m_ScriptEngine->newQObject(wrap(win));
   m_ScriptEngine->globalObject().setProperty("mainwin", mwin);
 
   // Provide a pointer to the engine
   QJSValue vthis = m_ScriptEngine->newQObject(this);
   m_ScriptEngine->globalObject().setProperty("engine", vthis);
 
-  QJSValue test = m_ScriptEngine->newQObject(win->findChild<QPushButton *>("btnLoadMain"));
+  QJSValue test = m_ScriptEngine->newQObject(wrap(win->findChild<QPushButton *>("btnLoadMain")));
   m_ScriptEngine->globalObject().setProperty("btn", test);
 
   // Assign the data directory to the script engine
@@ -60,7 +250,27 @@ SNAPTestQt::SNAPTestQt(MainImageWindow *win,
 
 SNAPTestQt::~SNAPTestQt()
 {
+  // We are destroyed after the GUI event loop has stopped, and the script
+  // thread may still be inside evaluate(). Give it a moment to unwind --
+  // application_exit() has already told the marshalling helpers to stop waiting
+  // on that event loop, so it should return promptly.
+  // (qualified: TestWorker::wait is the script-facing sleep, not QThread::wait)
+  if(m_Worker && m_Worker->isRunning())
+    m_Worker->QThread::wait(QDeadlineTimer(2000));
+
+  if(m_Worker && m_Worker->isRunning())
+    {
+    // Still running. Deleting the engine and proxies out from under it, or
+    // letting ~QObject destroy a live QThread, would turn a finished test into
+    // a crash report; leave them to process teardown instead.
+    qWarning() << "Test script thread did not finish; skipping test engine cleanup";
+    m_Worker->setParent(NULL);
+    setParent(NULL);
+    return;
+    }
+
   delete m_ScriptEngine;
+  delete m_ProxyOwner;
   setParent(NULL);
   delete m_DummyParent;
 }
@@ -85,36 +295,89 @@ SNAPTestQt::LaunchTest(std::string test)
   m_Worker->start();
 }
 
-QObject *SNAPTestQt::findChild(QObject *parent, QString child)
+TestObjectProxy *SNAPTestQt::wrap(QObject *obj)
 {
-  return parent->findChild<QObject *>(child);
-}
+  if(!obj)
+    return NULL;
 
-QWidget *SNAPTestQt::findWidget(QString widgetName)
-{
-  foreach(QWidget *w, QApplication::allWidgets())
-    if(w->objectName() == widgetName)
-      return w;
+  AssertOnGuiThread("wrap");
 
-  return NULL;
-}
-
-
-QVariant SNAPTestQt::tableItemText(QObject *table, int row, int col)
-{
-  QAbstractItemView *view = dynamic_cast<QAbstractItemView *>(table);
-  if(view)
+  auto it = m_ProxyCache.find(obj);
+  if(it != m_ProxyCache.end())
     {
-    QAbstractItemModel *model = view->model();
-    return model->data(model->index(row, col));
+    if(it.value()->target() == obj)
+      return it.value();
+
+    // The wrapped object died and a new one was allocated at its address
+    delete it.value();
+    m_ProxyCache.erase(it);
     }
 
-  return QVariant();
+  TestObjectProxy *proxy = new TestObjectProxy(obj, m_ProxyOwner);
+  m_ProxyCache.insert(obj, proxy);
+  return proxy;
+}
+
+QObject *SNAPTestQt::findChildObject(QObject *parent, const QString &name)
+{
+  AssertOnGuiThread("findChild");
+  return parent ? parent->findChild<QObject *>(name) : NULL;
+}
+
+TestObjectProxy *SNAPTestQt::findChild(TestObjectProxy *parent, QString child)
+{
+  TestObjectProxy *result = NULL;
+  QPointer<TestObjectProxy> owner(parent);
+
+  RunOnOwnerThreadAndWait(this, [&]() {
+    QObject *pobj = owner ? owner->target() : NULL;
+    result = wrap(findChildObject(pobj, child));
+    });
+
+  return result;
+}
+
+TestObjectProxy *SNAPTestQt::findWidget(QString widgetName)
+{
+  TestObjectProxy *result = NULL;
+
+  RunOnOwnerThreadAndWait(this, [&]() {
+    AssertOnGuiThread("findWidget");
+    foreach(QWidget *w, QApplication::allWidgets())
+      if(w->objectName() == widgetName)
+        {
+        result = wrap(w);
+        return;
+        }
+    });
+
+  return result;
+}
+
+
+QVariant SNAPTestQt::tableItemText(TestObjectProxy *table, int row, int col)
+{
+  QVariant result;
+  QPointer<TestObjectProxy> owner(table);
+
+  RunOnOwnerThreadAndWait(this, [&]() {
+    AssertOnGuiThread("tableItemText");
+    QAbstractItemView *view = owner ? dynamic_cast<QAbstractItemView *>(owner->target()) : NULL;
+    if(view)
+      {
+      QAbstractItemModel *model = view->model();
+      result = model->data(model->index(row, col));
+      }
+    });
+
+  return result;
 }
 
 
 QModelIndex SNAPTestQt::findItem(QObject *container, QVariant text)
 {
+  AssertOnGuiThread("findItem");
+
   QAbstractItemModel *model = NULL;
 
   // Is it a combo box?
@@ -136,49 +399,74 @@ QModelIndex SNAPTestQt::findItem(QObject *container, QVariant text)
   return QModelIndex();
 }
 
-void SNAPTestQt::invoke(QObject *object, QString slot)
+void SNAPTestQt::invoke(TestObjectProxy *object, QString slot)
 {
   if(!object)
     m_ScriptEngine->throwError(QJSValue::ReferenceError,
                                QString("Invoked slot %1 on null object").arg(slot));
   else
-    QMetaObject::invokeMethod(object, slot.toStdString().c_str(), Qt::QueuedConnection);
+    object->invoke(slot);
 }
 
-void SNAPTestQt::trigger(QString action_name, QObject *parent)
+void SNAPTestQt::trigger(QString action_name, TestObjectProxy *parent)
 {
-  auto *action = dynamic_cast<QAction *>(findChild(parent ? parent : this->m_Parent, action_name));
+  TestObjectProxy *action = NULL;
+  QPointer<TestObjectProxy> owner(parent);
+
+  RunOnOwnerThreadAndWait(this, [&]() {
+    QObject *pobj = owner ? owner->target() : static_cast<QObject *>(this->m_Parent);
+    action = wrap(dynamic_cast<QAction *>(findChildObject(pobj, action_name)));
+    });
+
   invoke(action, "trigger");
 }
 
-void SNAPTestQt::comboBoxSelect(QObject *widget, QString itemText)
+void SNAPTestQt::comboBoxSelect(TestObjectProxy *widget, QString itemText)
 {
-  auto *combo = dynamic_cast<QComboBox *>(widget);
-  if(!combo)
+  bool is_combo = false;
+  QPointer<TestObjectProxy> owner(widget);
+
+  RunOnOwnerThreadAndWait(this, [&]() {
+    AssertOnGuiThread("comboBoxSelect");
+    is_combo = owner && dynamic_cast<QComboBox *>(owner->target()) != NULL;
+    });
+
+  if(!is_combo)
     m_ScriptEngine->throwError(QJSValue::ReferenceError,
                                QString("comboBoxSelect target not a combo box"));
 
   int row = findItemRow(widget, itemText).toInt();
-  QMetaObject::invokeMethod(widget, "setCurrentIndex", Qt::QueuedConnection, Q_ARG(int, row));
+  if(widget)
+    widget->setCurrentIndex(row);
 }
 
 
-QVariant SNAPTestQt::findItemRow(QObject *container, QVariant text)
+QVariant SNAPTestQt::findItemRow(TestObjectProxy *container, QVariant text)
 {
-  QModelIndex idx = findItem(container, text);
-  if(idx.isValid())
-    return idx.row();
+  QVariant result;
+  QPointer<TestObjectProxy> owner(container);
 
-  return QVariant();
+  RunOnOwnerThreadAndWait(this, [&]() {
+    QModelIndex idx = findItem(owner ? owner->target() : NULL, text);
+    if(idx.isValid())
+      result = idx.row();
+    });
+
+  return result;
 }
 
-QVariant SNAPTestQt::findItemColumn(QObject *container, QVariant text)
+QVariant SNAPTestQt::findItemColumn(TestObjectProxy *container, QVariant text)
 {
-  QModelIndex idx = findItem(container, text);
-  if(idx.isValid())
-    return idx.column();
+  QVariant result;
+  QPointer<TestObjectProxy> owner(container);
 
-  return QVariant();
+  RunOnOwnerThreadAndWait(this, [&]() {
+    QModelIndex idx = findItem(owner ? owner->target() : NULL, text);
+    if(idx.isValid())
+      result = idx.column();
+    });
+
+  return result;
 }
 
 
@@ -189,6 +477,8 @@ void SNAPTestQt::print(QString text)
 
 void SNAPTestQt::printChildrenRecursive(QObject *parent, QString offset, const char *className)
 {
+  AssertOnGuiThread("printChildren");
+
   if(parent)
     {
     if(!className || parent->inherits(className))
@@ -210,20 +500,26 @@ void SNAPTestQt::printChildrenRecursive(QObject *parent, QString offset, const c
     }
 }
 
-void SNAPTestQt::printChildren(QObject *parent)
+void SNAPTestQt::printChildren(TestObjectProxy *parent)
 {
-  printChildrenRecursive(parent, "");
+  QPointer<TestObjectProxy> owner(parent);
+
+  RunOnOwnerThreadAndWait(this, [&]() {
+    printChildrenRecursive(owner ? owner->target() : NULL, "");
+    });
 }
 
-void SNAPTestQt::printChildren(QObject *parent, QString className)
+void SNAPTestQt::printChildren(TestObjectProxy *parent, QString className)
 {
-  const char *cn = NULL;
-  if(!className.isNull())
-    {
+  QPointer<TestObjectProxy> owner(parent);
+
+  RunOnOwnerThreadAndWait(this, [&]() {
+    const char *cn = NULL;
     QByteArray ba = className.toLocal8Bit();
-    cn = ba.data();
-    }
-  printChildrenRecursive(parent, "", cn);
+    if(!className.isNull())
+      cn = ba.data();
+    printChildrenRecursive(owner ? owner->target() : NULL, "", cn);
+    });
 }
 
 void SNAPTestQt::validateValue(QVariant v1, QVariant v2)
@@ -250,6 +546,10 @@ void SNAPTestQt::validateValue(QVariant v1, QVariant v2)
 
 void SNAPTestQt::application_exit(int rc)
 {
+  // Stop the marshalling helpers from waiting on an event loop that is about to
+  // stop; the test's outcome is already decided at this point
+  g_Exiting.storeRelease(1);
+
   QMetaObject::invokeMethod(
         QCoreApplication::instance(), "quitWithReturnCode", Qt::QueuedConnection,
         Q_ARG(int, rc));
@@ -257,6 +557,8 @@ void SNAPTestQt::application_exit(int rc)
 
 void SNAPTestQt::postKeyEventInternal(QObject *object, QString key)
 {
+    AssertOnGuiThread("postKeyEvent");
+
     QWidget *widget = dynamic_cast<QWidget *>(object);
     if(widget)
     {
@@ -312,7 +614,7 @@ void SNAPTestQt::testFailed(QString reason)
 }
 
 
-void SNAPTestQt::postMouseEvent(QObject *object, double rel_x, double rel_y, QString eventType, QString button)
+void SNAPTestQt::postMouseEvent(TestObjectProxy *object, double rel_x, double rel_y, QString eventType, QString button)
 {
   // Special case handlers
   if(eventType == "click")
@@ -322,9 +624,17 @@ void SNAPTestQt::postMouseEvent(QObject *object, double rel_x, double rel_y, QSt
     return;
     }
 
-  QWidget *widget = dynamic_cast<QWidget *>(object);
-  if(widget)
-    {
+  QPointer<TestObjectProxy> owner(object);
+
+  // The geometry has to be read on the GUI thread; posting the event afterwards
+  // is thread-safe either way
+  RunOnOwnerThreadAndWait(this, [&]() {
+    AssertOnGuiThread("postMouseEvent");
+
+    QWidget *widget = owner ? dynamic_cast<QWidget *>(owner->target()) : NULL;
+    if(!widget)
+      return;
+
     QSize size = widget->size();
     QPointF localPos((int)(size.width() * rel_x), (int)(size.height() * rel_y));
     QPointF globalPos = widget->mapToGlobal(localPos); // added global pos to fix deprected QMouseEvent Constructor issue
@@ -345,14 +655,18 @@ void SNAPTestQt::postMouseEvent(QObject *object, double rel_x, double rel_y, QSt
 
     QMouseEvent *event = new QMouseEvent(type, localPos, globalPos, btn, btn, Qt::NoModifier);
     QApplication::postEvent(widget, event);
-    }
+    });
 }
 
-void SNAPTestQt::postKeyEvent(QObject *object, QString key)
+void SNAPTestQt::postKeyEvent(TestObjectProxy *object, QString key)
 {
   // We need the code to run in the main thread
-  QMetaObject::invokeMethod(
-    this, "postKeyEventInternal", Qt::QueuedConnection, Q_ARG(QObject *, object), Q_ARG(QString, key));
+  QPointer<TestObjectProxy> owner(object);
+
+  QMetaObject::invokeMethod(this, [this, owner, key]() {
+    if(owner)
+      postKeyEventInternal(owner->target(), key);
+    }, Qt::QueuedConnection);
 }
 
 
