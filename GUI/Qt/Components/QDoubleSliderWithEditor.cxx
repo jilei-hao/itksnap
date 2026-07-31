@@ -38,6 +38,16 @@ void QDoubleSliderWithEditor::setValue(double newval)
     ui->spinbox->setSpecialValueText("");
     m_IgnoreSpinnerEvent = false;
     this->updateSliderFromSpinner();
+
+    // The 'value' property declares NOTIFY valueChanged, so a programmatic
+    // change has to emit it too -- anything coupled to this widget learns of
+    // the new value only through this signal. m_IgnoreSpinnerEvent above
+    // suppresses the *internal* spinbox relay, whose job is only to keep the
+    // slider in step (already done by updateSliderFromSpinner); it must not
+    // swallow the notification itself. This cannot feed back into a coupled
+    // model: PropertyModelToWidgetDataMapping guards the model-to-widget
+    // direction with m_Updating.
+    emit valueChanged(ui->spinbox->value());
     }
 }
 
