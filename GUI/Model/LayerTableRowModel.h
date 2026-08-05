@@ -127,7 +127,7 @@ public:
 
 protected:
   AbstractLayerTableRowModel();
-  virtual ~AbstractLayerTableRowModel() {}
+  virtual ~AbstractLayerTableRowModel();
 
   // ------------------------------------------
   //  Begin virtual methods implementation
@@ -158,6 +158,24 @@ protected:
   // Called when m_Layer fires itk::DeleteEvent; subclasses override to null
   // their own typed layer pointers.
   virtual void OnLayerDeleted() {}
+
+  // Direct (synchronous) observer of the layer's itk::DeleteEvent. ITK fires
+  // DeleteEvent from UnRegister() while the object is still fully alive, so
+  // this is the last moment at which m_Layer is safe to hold. Everything that
+  // invalidates our layer state must happen here rather than in OnUpdate():
+  // OnUpdate() only runs when some view calls Update(), and until then every
+  // reader of GetLayer() sees a dangling pointer.
+  void OnLayerDeleteEvent();
+
+  // The object the above observer is registered on, and its tag. Kept separate
+  // from m_Layer because several code paths (e.g. CloseLayer) null m_Layer
+  // without the layer being destroyed; this pointer is cleared only by the
+  // delete event itself, so it is always safe to RemoveObserver through.
+  WrapperBase  *m_ObservedLayer = nullptr;
+  unsigned long m_LayerDeleteObserverTag = 0;
+
+  // Common invalidation, called from both OnLayerDeleteEvent() and OnUpdate().
+  void InvalidateLayer();
 
   // Generic image data object in which this layer lives.
   GenericImageData *m_ImageData;

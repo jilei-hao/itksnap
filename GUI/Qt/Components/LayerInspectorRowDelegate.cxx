@@ -647,6 +647,11 @@ void LayerInspectorRowDelegate::mouseMoveEvent(QMouseEvent *)
 
 void LayerInspectorRowDelegate::ApplyColorMap()
 {
+  // The layer may already be gone: a display-mapping change and the layer's
+  // destruction can arrive in the same coalesced event bucket.
+  if(!m_Model->GetLayer())
+    return;
+
   ColorMap *cm = m_Model->GetLayer()->GetDisplayMapping()->GetColorMap();
   if(cm)
     {
