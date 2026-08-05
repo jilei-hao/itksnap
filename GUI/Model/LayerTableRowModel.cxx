@@ -54,6 +54,13 @@ AbstractLayerTableRowModel::AbstractLayerTableRowModel()
 
 bool AbstractLayerTableRowModel::CheckState(UIState state)
 {
+  // A row model whose layer is gone has no capabilities. This must come before
+  // any role test: InvalidateLayer() resets m_LayerRole to NO_ROLE, and the
+  // role-based guards below are written as `m_LayerRole != SOME_ROLE`, which
+  // NO_ROLE passes -- so without this the layer derefs are reached with null.
+  if(!m_Layer)
+    return false;
+
   // Are we in tiling mode?
   /* commenting out unused code to avoid warnings
   bool tiling = (
@@ -145,6 +152,8 @@ bool AbstractLayerTableRowModel::GetNicknameValue(std::string &value)
 
 void AbstractLayerTableRowModel::SetNicknameValue(std::string value)
 {
+  if(!m_Layer) return;
+
   m_Layer->SetCustomNickname(value);
 }
 
@@ -210,7 +219,11 @@ bool AbstractLayerTableRowModel::GetLayerOpacityValueAndRange(int &value, Numeri
 }
  void AbstractLayerTableRowModel::SetLayerOpacityValue(int value)
 {
+  // assert() alone is compiled out under NDEBUG, so release builds had no
+  // protection here at all -- the W8 item 15b pattern.
   assert(m_Layer);
+  if(!m_Layer) return;
+
   m_Layer->SetAlpha(value / 100.0);
 }
 
@@ -302,6 +315,11 @@ ImageLayerTableRowModel::GetDisplayMode()
 bool
 ImageLayerTableRowModel::CheckState(UIState state)
 {
+  // See AbstractLayerTableRowModel::CheckState -- the role guards below do not
+  // protect the m_ImageLayer derefs once the layer has been invalidated.
+  if(!m_ImageLayer)
+    return false;
+
   switch (state)
     {
     // Opacity can be edited for all layers except the main image layer
@@ -493,6 +511,8 @@ ImageLayerTableRowModel::GetStickyValue(bool &value)
 void
 ImageLayerTableRowModel::SetStickyValue(bool value)
 {
+  if(!m_ImageLayer) return;
+
   // Make sure the selected ID is legitimate
   if(m_ParentModel->GetGlobalState()->GetSelectedLayerId() == m_ImageLayer->GetUniqueId())
     {
@@ -720,6 +740,11 @@ MeshLayerTableRowModel::Initialize(GlobalUIModel *parentModel, WrapperBase *laye
 bool
 MeshLayerTableRowModel::CheckState(UIState state)
 {
+  // Both derefs below happen before the switch, so they are reached for every
+  // state query -- including the ones the base class would have answered.
+  if(!m_MeshLayer)
+    return false;
+
   bool hasGenericDMP =
     (dynamic_cast<GenericMeshDisplayMappingPolicy *>(m_MeshLayer->GetDisplayMapping()) != NULL);
 
@@ -808,8 +833,10 @@ MeshLayerTableRowModel::IsActivated() const
 void
 MeshLayerTableRowModel::AutoAdjustContrast()
 {
+  if(!m_Layer) return;
+
   auto genericDMP = dynamic_cast<GenericMeshDisplayMappingPolicy*>(m_Layer->GetDisplayMapping());
-  if(m_Layer && genericDMP && genericDMP->GetIntensityCurve())
+  if(genericDMP && genericDMP->GetIntensityCurve())
     {
     genericDMP->AutoFitContrast();
     }

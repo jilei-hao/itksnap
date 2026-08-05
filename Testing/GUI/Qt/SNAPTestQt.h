@@ -245,11 +245,17 @@ public slots:
 
   static void application_exit(int rc);
 
-protected slots:
+protected:
 
+  // NOT a slot, deliberately. QJSEngine exposes protected slots to scripts
+  // (only private ones are hidden), so as a slot this was reachable as
+  // engine.postKeyEventInternal(...) -- the one script-visible API taking a
+  // raw QObject*, which then aborted in AssertOnGuiThread because the script
+  // runs on the worker thread. It is only ever called from the lambda in
+  // postKeyEvent(), which has already hopped to the GUI thread, so it does
+  // not need to be a slot at all.
   void postKeyEventInternal(QObject *object, QString key);
 
-protected:
 
   ReturnCode ListTests();
 
