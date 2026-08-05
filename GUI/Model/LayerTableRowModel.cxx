@@ -18,6 +18,7 @@
 #include "SegmentationMeshWrapper.h"
 #include "GuidedNativeImageIO.h"
 #include "MeshWrapperBase.h"
+#include "SNAPEventListenerCallbacks.h"
 
 AbstractLayerTableRowModel::AbstractLayerTableRowModel()
 {
@@ -108,6 +109,14 @@ void AbstractLayerTableRowModel::Initialize(GlobalUIModel *parentModel, WrapperB
   // in the GUI...
   Rebroadcast(layer, itk::DeleteEvent(), ModelUpdateEvent());
 
+  // The rebroadcast above only records the event; the state is not cleared
+  // until some view calls Update(). Since m_Layer is a raw pointer, that
+  // leaves a window in which every reader of GetLayer() sees freed memory.
+  // Observe the delete directly as well, and invalidate immediately.
+  m_ObservedLayer = layer;
+  m_LayerDeleteObserverTag =
+    AddListener(layer, itk::DeleteEvent(), this, &Self::OnLayerDeleteEvent);
+
   // The state of this model only depends on wrapper's position in the list of
   // layers, not on the wrapper metadata
   Rebroadcast(m_ParentModel->GetDriver(), LayerChangeEvent(),
@@ -140,19 +149,46 @@ void AbstractLayerTableRowModel::SetNicknameValue(std::string value)
 }
 
 
+AbstractLayerTableRowModel::~AbstractLayerTableRowModel()
+{
+  // If the layer is still alive, drop our observer -- otherwise it would fire
+  // into a destroyed model later.
+  if(m_ObservedLayer)
+    m_ObservedLayer->RemoveObserver(m_LayerDeleteObserverTag);
+}
+
+void AbstractLayerTableRowModel::InvalidateLayer()
+{
+  m_Layer = NULL;
+  OnLayerDeleted();
+  m_LayerRole = NO_ROLE;
+  m_LayerPositionInRole = -1;
+  m_LayerNumberOfLayersInRole = -1;
+}
+
+void AbstractLayerTableRowModel::OnLayerDeleteEvent()
+{
+  // Fired from itk::Object::UnRegister() while the layer is still alive. The
+  // observer dies with the layer, so it must not be removed here -- just
+  // forget the source so the destructor does not try to.
+  m_ObservedLayer = NULL;
+  this->InvalidateLayer();
+}
+
 void AbstractLayerTableRowModel::OnUpdate()
 {
-  // Has our layer been deleted?
-  if(this->m_EventBucket->HasEvent(itk::DeleteEvent(), m_Layer))
+  // Has our layer been deleted? Normally OnLayerDeleteEvent() has already
+  // handled this synchronously; the branch remains for the case where the
+  // model's layer pointer was cleared by other means.
+  if(m_Layer && this->m_EventBucket->HasEvent(itk::DeleteEvent(), m_Layer))
     {
-    m_Layer = NULL;
-    OnLayerDeleted();
-    m_LayerRole = NO_ROLE;
-    m_LayerPositionInRole = -1;
-    m_LayerNumberOfLayersInRole = -1;
+    this->InvalidateLayer();
     }
-  else if(this->m_EventBucket->HasEvent(LayerChangeEvent()))
+  else if(m_Layer && this->m_EventBucket->HasEvent(LayerChangeEvent()))
     {
+    // Only meaningful while we still have a layer -- UpdateRoleInfo()
+    // dereferences it in every subclass. Without one the role fields were
+    // already reset by InvalidateLayer().
     this->UpdateRoleInfo();
     }
 }
