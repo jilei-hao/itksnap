@@ -175,6 +175,27 @@ MultiFrameDicomSeriesSorter
 	m_GroupingStrat->Apply();
 	m_SliceGroupingResult = m_GroupingStrat->GetOutput();
 
+	// Validate that the series forms a rectangular N_phases x N_slices grid:
+	// every slice position (group of files at one Z) must hold the same number
+	// of frames. Frame assignment below is positional (the k-th file at each Z
+	// becomes frame k), so a ragged grid would silently misalign cardiac phases
+	// across slices. Quarantine (fail loudly) instead.
+	if (!m_SliceGroupingResult.empty())
+		{
+		std::size_t expected = m_SliceGroupingResult.begin()->second.size();
+		for (auto &kv : m_SliceGroupingResult)
+			{
+			if (kv.second.size() != expected)
+				throw IRISException(
+					"Error: 4D DICOM series is not a rectangular grid. Slice at z=%f "
+					"has %d frames but %d were expected (%d files over %d slice "
+					"positions). The series may be incomplete or contain mixed "
+					"acquisitions; try loading it as a 3D DICOM series instead.",
+					kv.first, (int) kv.second.size(), (int) expected,
+					(int) m_DicomFilesList.size(), (int) m_SliceGroupingResult.size());
+			}
+		}
+
 	this->UpdateProgress(0.3);
 
 	float frmOrdProgInc = 0.3 / m_SliceGroupingResult.size(); // frame ordering progress increment
