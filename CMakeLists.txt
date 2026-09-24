@@ -1334,6 +1334,9 @@ SET(GUI_TESTS
   VolumeRendering
   Reloading
   SegmentationSwitching
+  SegAnchor4DSwitching
+  SegAnchor4DLoad3D
+  SegAnchor4DMesh
   4DToMC
   MCTo4D
   DeformationGrid
@@ -1424,6 +1427,14 @@ TARGET_LINK_LIBRARIES(logic_api_test ${SNAP_EXTERNAL_LIBS} itksnaplogic)
 TARGET_INCLUDE_DIRECTORIES(logic_api_test PUBLIC ${SNAP_INCLUDE_DIRS})
 
 add_test(NAME IRISApplicationTest COMMAND logic_api_test)
+
+# Test: workspace round trip with 4D segmentations on their own grids (seg_anchor)
+ADD_EXECUTABLE(SegAnchor4DWorkspaceTest
+    Testing/Logic/SegAnchor4DWorkspaceTest.cxx)
+TARGET_LINK_LIBRARIES(SegAnchor4DWorkspaceTest ${SNAP_EXTERNAL_LIBS} itksnaplogic)
+TARGET_INCLUDE_DIRECTORIES(SegAnchor4DWorkspaceTest PUBLIC ${SNAP_INCLUDE_DIRS})
+
+add_test(NAME SegAnchor4DWorkspace COMMAND SegAnchor4DWorkspaceTest ${TESTDATA_DIR} ${TEMP})
 
 ADD_EXECUTABLE(remote_image_load_test
     Testing/Logic/RemoteImageLoadTest.cxx)

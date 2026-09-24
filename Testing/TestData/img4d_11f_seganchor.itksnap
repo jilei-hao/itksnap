@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE registry [
+<!ELEMENT registry (entry*,folder*)>
+<!ELEMENT folder (entry*,folder*)>
+<!ELEMENT entry EMPTY>
+<!ATTLIST folder key CDATA #REQUIRED>
+<!ATTLIST entry key CDATA #REQUIRED>
+<!ATTLIST entry value CDATA #REQUIRED>
+]>
+<registry>
+  <entry key="SaveLocation" value="/Users/jileihao/dev/itksnap-dev/itksnap-developer/worktrees/seg-anchor-4d/Testing/TestData" />
+  <entry key="Version" value="20260901" />
+  <folder key="Layers" >
+    <folder key="Layer[000]" >
+      <entry key="AbsolutePath" value="/Users/jileihao/dev/itksnap-dev/itksnap-developer/worktrees/seg-anchor-4d/Testing/TestData/img4d_11f.nii.gz" />
+      <entry key="Role" value="MainRole" />
+      <folder key="ProjectMetaData" >
+        <folder key="Files" >
+          <folder key="Grey" >
+            <entry key="Dimensions" value="38 35 38" />
+          </folder>
+        </folder>
+      </folder>
+    </folder>
+    <folder key="Layer[001]" >
+      <entry key="AbsolutePath" value="/Users/jileihao/dev/itksnap-dev/itksnap-developer/worktrees/seg-anchor-4d/Testing/TestData/seg4d_11f_label1_x2crop.nii.gz" />
+      <entry key="Role" value="SegmentationRole" />
+    </folder>
+    <folder key="Layer[002]" >
+      <entry key="AbsolutePath" value="/Users/jileihao/dev/itksnap-dev/itksnap-developer/worktrees/seg-anchor-4d/Testing/TestData/seg4d_11f_label2_x15.nii.gz" />
+      <entry key="Role" value="SegmentationRole" />
+    </folder>
+  </folder>
+</registry>
