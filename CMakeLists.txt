@@ -1423,6 +1423,14 @@ add_test(NAME SlicingPerformanceTestZ150 COMMAND itkTestDriver
 
 add_test(NAME TDigestTest COMMAND testTDigest ${TESTDATA_DIR}/tdigest_test.nii.gz 0.98)
 
+# Test: the full-extent region (cursor range, zoom to fit) in the reference space
+ADD_EXECUTABLE(FullExtentRegionTest
+    Testing/Logic/FullExtentRegionTest.cxx)
+TARGET_LINK_LIBRARIES(FullExtentRegionTest ${SNAP_EXTERNAL_LIBS} itksnaplogic)
+TARGET_INCLUDE_DIRECTORIES(FullExtentRegionTest PUBLIC ${SNAP_INCLUDE_DIRS})
+
+add_test(NAME FullExtentRegion COMMAND FullExtentRegionTest ${TEMP})
+
 # This test basically checks whether we can build using the logic library onlu
 ADD_EXECUTABLE(logic_api_test
     Testing/Logic/IRISApplicationTest.cxx)
