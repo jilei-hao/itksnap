@@ -1474,6 +1474,14 @@ TARGET_INCLUDE_DIRECTORIES(TestLargeImageCheck PUBLIC ${SNAP_INCLUDE_DIRS})
 
 add_test(NAME TestLargeImageCheck COMMAND TestLargeImageCheck ${TEMP})
 
+# Test: a 3D segmentation loaded into a 4D workspace must match the selected segmentation
+ADD_EXECUTABLE(Seg3DInto4DTest
+    Testing/Logic/Seg3DInto4DTest.cxx)
+TARGET_LINK_LIBRARIES(Seg3DInto4DTest ${SNAP_EXTERNAL_LIBS} itksnaplogic)
+TARGET_INCLUDE_DIRECTORIES(Seg3DInto4DTest PUBLIC ${SNAP_INCLUDE_DIRS})
+
+add_test(NAME Seg3DInto4D COMMAND Seg3DInto4DTest ${TESTDATA_DIR} ${TEMP})
+
 # Set up a test for each GUI test
 FOREACH(GUI_TEST ${GUI_TESTS})
 
