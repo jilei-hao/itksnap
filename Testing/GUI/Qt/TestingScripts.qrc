@@ -20,6 +20,9 @@
         <file>Scripts/test_NaNs.js</file>
         <file>Scripts/test_Reloading.js</file>
         <file>Scripts/test_SegmentationSwitching.js</file>
+        <file>Scripts/test_SegAnchor4DSwitching.js</file>
+        <file>Scripts/test_SegAnchor4DLoad3D.js</file>
+        <file>Scripts/test_SegAnchor4DMesh.js</file>
         <file>Scripts/test_4DToMC.js</file>
         <file>Scripts/test_MCTo4D.js</file>
         <file>Scripts/test_DeformationGrid.js</file>
