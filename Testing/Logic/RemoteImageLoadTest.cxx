@@ -21,6 +21,25 @@
 #  include <sys/stat.h>
 #endif
 
+// The test's application data directory. The remote-file cache and everything
+// else the app keeps there goes under it, never into the user's real profile.
+static std::string TestDataRoot()
+{
+  return itksys::SystemTools::CollapseFullPath(".itksnap_test");
+}
+
+// SystemInterface::GetApplicationDataDirectory() asks the delegate below only
+// on macOS. Windows builds it from %APPDATA% and Linux from $HOME, so point
+// those at TestDataRoot() too. Must run before the first IRISApplication.
+static void RedirectApplicationDataDirectory()
+{
+#ifdef _WIN32
+  _putenv_s("APPDATA", TestDataRoot().c_str());
+#else
+  setenv("HOME", TestDataRoot().c_str(), 1);
+#endif
+}
+
 // Minimal delegate — returns system temp dir, stubs everything else
 class SimpleSystemInfoDelegate : public SystemInfoDelegate
 {
@@ -30,7 +49,7 @@ public:
   std::string GetApplicationDirectory() override
     { return itksys::SystemTools::GetFilenamePath(m_Exe); }
   std::string GetApplicationFile() override { return m_Exe; }
-  std::string GetApplicationPermanentDataLocation() override { return ".itksnap_test"; }
+  std::string GetApplicationPermanentDataLocation() override { return TestDataRoot(); }
   std::string GetUserDocumentsLocation() override { return ".itksnap_test"; }
   std::string GetTempDirectory() override
     {
@@ -329,10 +348,25 @@ static int RegressionTest(const std::string &flag,
 
 static int TestCache(const std::string &url)
 {
-  // Derive the cache paths from the same data directory the app would use.
-  std::string data_dir  = ".itksnap_test";
+  IRISWarningList warnings;
+  auto app1 = MakeApp();
+
+  // Derive the cache paths from the data directory the app actually uses;
+  // its location differs by platform.
+  std::string data_dir  = itksys::SystemTools::CollapseFullPath(
+    app1->GetSystemInterface()->GetApplicationDataDirectory());
   std::string cache_dir = data_dir + "/Cache";
   std::string meta_path = data_dir + "/CacheMetadata.xml";
+
+  // Never clear a cache outside the test's own directory: it would be the
+  // user's real one.
+  std::string root = TestDataRoot();
+  if (data_dir != root && data_dir.compare(0, root.size() + 1, root + "/") != 0)
+    {
+    std::cerr << "FAIL: application data directory " << data_dir
+              << " is outside the test directory " << root << std::endl;
+    return 1;
+    }
 
   // ── 1. Clear cache ───────────────────────────────────────────────────
   std::cout << "Clearing cache at " << data_dir << std::endl;
@@ -347,9 +381,6 @@ static int TestCache(const std::string &url)
 
   // ── 2. First download ────────────────────────────────────────────────
   std::cout << "First download: " << url << std::endl;
-
-  IRISWarningList warnings;
-  auto app1 = MakeApp();
 
   try
     {
@@ -488,6 +519,7 @@ int main(int argc, char *argv[])
   // --- Setup ---
   SimpleSystemInfoDelegate sidel(argv[0]);
   SystemInterface::SetSystemInfoDelegate(&sidel);
+  RedirectApplicationDataDirectory();
 
   SimpleColorMapSource cmSource;
   ColorMap::SetColorMapPresetNameSource(&cmSource);
