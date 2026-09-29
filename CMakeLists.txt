@@ -1466,6 +1466,14 @@ set_tests_properties(
     LABELS "Remote"
     TIMEOUT 120)
 
+# Test: the cardiac %R-R / echo frame-time axis survives save and reload
+ADD_EXECUTABLE(CardiacFrameAxisTest
+    Testing/Logic/CardiacFrameAxisTest.cxx)
+TARGET_LINK_LIBRARIES(CardiacFrameAxisTest ${SNAP_EXTERNAL_LIBS} itksnaplogic)
+TARGET_INCLUDE_DIRECTORIES(CardiacFrameAxisTest PUBLIC ${SNAP_INCLUDE_DIRS})
+
+add_test(NAME CardiacFrameAxis COMMAND CardiacFrameAxisTest ${TESTDATA_DIR} ${TEMP})
+
 # Test: large-image size guard throws IRISException instead of crashing with SIGBUS
 ADD_EXECUTABLE(TestLargeImageCheck
     Testing/Logic/TestLargeImageCheck.cxx)

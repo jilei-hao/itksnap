@@ -184,9 +184,25 @@ the seq header; echo support; NIfTI sidecar reading; slice thickness across seq.
 
 ## 8. Testing notes
 
-The phase derivation and round-trips were verified with a throwaway driver linking `itksnaplogic`
-against the AVRP cohort (`bavcta005` clean 20-phase → `0 5 … 95`, `bavcta007` ambiguous 10-phase →
-non-uniform `0 10.56 … 95`). To reproduce: add a temporary `ADD_EXECUTABLE` linking
-`${SNAP_EXTERNAL_LIBS} itksnaplogic`, set the format to `FORMAT_DICOM_DIR_4DCTA`, call
-`ReadNativeImage(<one DICOM file>)`, then `SaveNativeImage(<out>, <format hints>)`; inspect the NRRD
-header / JSON sidecar.
+`CardiacFrameAxisTest` (`Testing/Logic/CardiacFrameAxisTest.cxx`, ctest name `CardiacFrameAxis`) is
+the regression test. It needs no DICOM cohort:
+
+- **CT:** it writes a 10-phase 4D image with plain ITK, as a `.nrrd` carrying the keys of §2.3
+  (`0 - 95 %` over 10 phases, so the non-integer step and `Exact = 0`) plus a few patient fields.
+  It loads the file through `IRISApplication`, checks the per-time-point `%R-R` in
+  `TimePointProperties`, then saves it as `.seq.nrrd`, `.nii.gz` + sidecar and `.nrrd` and loads each
+  one again. Every reload must keep the values, the exact flag, and the frame each value belongs to
+  (voxel values are checked per frame). The `.nrrd` export must drop the patient name and ID and
+  top-code an age of 95 to `090Y` (§4).
+- **Echo:** it loads `Testing/TestData/echo_cartesian_dummy.dcm` (30 frames), checks the frame times
+  in ms, and checks that they survive `.seq.nrrd` and `.nii.gz` + sidecar.
+
+The test was checked by breaking the code on purpose: dropping the `.seq.nrrd` axis, not writing or
+not reading the NIfTI sidecar, reversing the frame order in the `.seq.nrrd` writer, turning off the
+export curation, ignoring the `%R-R` in `TimePointProperties`, or dropping the echo frame times each
+make it fail.
+
+Not covered: deriving the axis from a DICOM `SeriesDescription` (§2.1–2.2), which needs a Siemens or
+GE 4D CTA series. That part was verified against the AVRP cohort with a throwaway driver (`bavcta005`,
+a clean 20-phase study → `0 5 … 95`; `bavcta007`, an ambiguous 10-phase study → non-uniform
+`0 10.56 … 95`).
