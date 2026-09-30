@@ -18,6 +18,7 @@
 #include "SegmentationMeshWrapper.h"
 #include "GuidedNativeImageIO.h"
 #include "MeshWrapperBase.h"
+#include "SNAPEventListenerCallbacks.h"
 
 AbstractLayerTableRowModel::AbstractLayerTableRowModel()
 {
@@ -53,6 +54,13 @@ AbstractLayerTableRowModel::AbstractLayerTableRowModel()
 
 bool AbstractLayerTableRowModel::CheckState(UIState state)
 {
+  // A row model whose layer is gone has no capabilities. This must come before
+  // any role test: InvalidateLayer() resets m_LayerRole to NO_ROLE, and the
+  // role-based guards below are written as `m_LayerRole != SOME_ROLE`, which
+  // NO_ROLE passes -- so without this the layer derefs are reached with null.
+  if(!m_Layer)
+    return false;
+
   // Are we in tiling mode?
   /* commenting out unused code to avoid warnings
   bool tiling = (
@@ -108,6 +116,14 @@ void AbstractLayerTableRowModel::Initialize(GlobalUIModel *parentModel, WrapperB
   // in the GUI...
   Rebroadcast(layer, itk::DeleteEvent(), ModelUpdateEvent());
 
+  // The rebroadcast above only records the event; the state is not cleared
+  // until some view calls Update(). Since m_Layer is a raw pointer, that
+  // leaves a window in which every reader of GetLayer() sees freed memory.
+  // Observe the delete directly as well, and invalidate immediately.
+  m_ObservedLayer = layer;
+  m_LayerDeleteObserverTag =
+    AddListener(layer, itk::DeleteEvent(), this, &Self::OnLayerDeleteEvent);
+
   // The state of this model only depends on wrapper's position in the list of
   // layers, not on the wrapper metadata
   Rebroadcast(m_ParentModel->GetDriver(), LayerChangeEvent(),
@@ -136,23 +152,52 @@ bool AbstractLayerTableRowModel::GetNicknameValue(std::string &value)
 
 void AbstractLayerTableRowModel::SetNicknameValue(std::string value)
 {
+  if(!m_Layer) return;
+
   m_Layer->SetCustomNickname(value);
 }
 
 
+AbstractLayerTableRowModel::~AbstractLayerTableRowModel()
+{
+  // If the layer is still alive, drop our observer -- otherwise it would fire
+  // into a destroyed model later.
+  if(m_ObservedLayer)
+    m_ObservedLayer->RemoveObserver(m_LayerDeleteObserverTag);
+}
+
+void AbstractLayerTableRowModel::InvalidateLayer()
+{
+  m_Layer = NULL;
+  OnLayerDeleted();
+  m_LayerRole = NO_ROLE;
+  m_LayerPositionInRole = -1;
+  m_LayerNumberOfLayersInRole = -1;
+}
+
+void AbstractLayerTableRowModel::OnLayerDeleteEvent()
+{
+  // Fired from itk::Object::UnRegister() while the layer is still alive. The
+  // observer dies with the layer, so it must not be removed here -- just
+  // forget the source so the destructor does not try to.
+  m_ObservedLayer = NULL;
+  this->InvalidateLayer();
+}
+
 void AbstractLayerTableRowModel::OnUpdate()
 {
-  // Has our layer been deleted?
-  if(this->m_EventBucket->HasEvent(itk::DeleteEvent(), m_Layer))
+  // Has our layer been deleted? Normally OnLayerDeleteEvent() has already
+  // handled this synchronously; the branch remains for the case where the
+  // model's layer pointer was cleared by other means.
+  if(m_Layer && this->m_EventBucket->HasEvent(itk::DeleteEvent(), m_Layer))
     {
-    m_Layer = NULL;
-    OnLayerDeleted();
-    m_LayerRole = NO_ROLE;
-    m_LayerPositionInRole = -1;
-    m_LayerNumberOfLayersInRole = -1;
+    this->InvalidateLayer();
     }
-  else if(this->m_EventBucket->HasEvent(LayerChangeEvent()))
+  else if(m_Layer && this->m_EventBucket->HasEvent(LayerChangeEvent()))
     {
+    // Only meaningful while we still have a layer -- UpdateRoleInfo()
+    // dereferences it in every subclass. Without one the role fields were
+    // already reset by InvalidateLayer().
     this->UpdateRoleInfo();
     }
 }
@@ -174,7 +219,11 @@ bool AbstractLayerTableRowModel::GetLayerOpacityValueAndRange(int &value, Numeri
 }
  void AbstractLayerTableRowModel::SetLayerOpacityValue(int value)
 {
+  // assert() alone is compiled out under NDEBUG, so release builds had no
+  // protection here at all -- the W8 item 15b pattern.
   assert(m_Layer);
+  if(!m_Layer) return;
+
   m_Layer->SetAlpha(value / 100.0);
 }
 
@@ -266,6 +315,11 @@ ImageLayerTableRowModel::GetDisplayMode()
 bool
 ImageLayerTableRowModel::CheckState(UIState state)
 {
+  // See AbstractLayerTableRowModel::CheckState -- the role guards below do not
+  // protect the m_ImageLayer derefs once the layer has been invalidated.
+  if(!m_ImageLayer)
+    return false;
+
   switch (state)
     {
     // Opacity can be edited for all layers except the main image layer
@@ -457,6 +511,8 @@ ImageLayerTableRowModel::GetStickyValue(bool &value)
 void
 ImageLayerTableRowModel::SetStickyValue(bool value)
 {
+  if(!m_ImageLayer) return;
+
   // Make sure the selected ID is legitimate
   if(m_ParentModel->GetGlobalState()->GetSelectedLayerId() == m_ImageLayer->GetUniqueId())
     {
@@ -684,6 +740,11 @@ MeshLayerTableRowModel::Initialize(GlobalUIModel *parentModel, WrapperBase *laye
 bool
 MeshLayerTableRowModel::CheckState(UIState state)
 {
+  // Both derefs below happen before the switch, so they are reached for every
+  // state query -- including the ones the base class would have answered.
+  if(!m_MeshLayer)
+    return false;
+
   bool hasGenericDMP =
     (dynamic_cast<GenericMeshDisplayMappingPolicy *>(m_MeshLayer->GetDisplayMapping()) != NULL);
 
@@ -772,8 +833,10 @@ MeshLayerTableRowModel::IsActivated() const
 void
 MeshLayerTableRowModel::AutoAdjustContrast()
 {
+  if(!m_Layer) return;
+
   auto genericDMP = dynamic_cast<GenericMeshDisplayMappingPolicy*>(m_Layer->GetDisplayMapping());
-  if(m_Layer && genericDMP && genericDMP->GetIntensityCurve())
+  if(genericDMP && genericDMP->GetIntensityCurve())
     {
     genericDMP->AutoFitContrast();
     }
