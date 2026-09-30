@@ -178,6 +178,14 @@ public:
   /** Simplified, non-static version of the above */
   void LaunchChildSNAPSimple(std::list<std::string> args);
 
+  /**
+   * Make the C library read and write numbers with a decimal point, whatever
+   * the user's locale. File readers such as NrrdIO parse header values with
+   * sscanf, which follows LC_NUMERIC, so a decimal-comma locale would read
+   * "0.4" as 0. Returns false if the C library refused the change.
+   */
+  static bool UseCNumericLocale();
+
   /** Get the directory where per-user application data (preferences, cache, etc.) are stored. */
   std::string GetApplicationDataDirectory();
 

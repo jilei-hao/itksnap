@@ -51,6 +51,7 @@
 #include <itksys/SystemTools.hxx>
 #include "itkVoxBoCUBImageIOFactory.h"
 #include <algorithm>
+#include <clocale>
 #include <ctime>
 #include <cerrno>
 #include <cstring>
@@ -232,6 +233,15 @@ SystemInterface
 
   // Read all the global histories from the file.
   m_HistoryManager->LoadGlobalHistory(this->Folder("IOHistory"));
+}
+
+bool
+SystemInterface
+::UseCNumericLocale()
+{
+  // Use "C", not "POSIX". The two are the same on Linux and macOS, but the
+  // Windows C runtime does not know "POSIX" and ignores the request (#256).
+  return std::setlocale(LC_NUMERIC, "C") != nullptr;
 }
 
 void SystemInterface

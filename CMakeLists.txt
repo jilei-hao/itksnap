@@ -1354,6 +1354,13 @@ ADD_EXECUTABLE(testTDigest Testing/Logic/TestTDigest.cxx)
 TARGET_LINK_LIBRARIES(testTDigest ${ITK_LIBRARIES})
 TARGET_INCLUDE_DIRECTORIES(testTDigest PUBLIC ${SNAP_INCLUDE_DIRS})
 
+# Test: NRRD headers load with the right spacing under a decimal-comma locale (#256)
+ADD_EXECUTABLE(NumericLocaleTest Testing/Logic/NumericLocaleTest.cxx)
+TARGET_LINK_LIBRARIES(NumericLocaleTest ${SNAP_EXTERNAL_LIBS} itksnaplogic)
+TARGET_INCLUDE_DIRECTORIES(NumericLocaleTest PUBLIC ${SNAP_INCLUDE_DIRS})
+add_test(NAME NumericLocale COMMAND NumericLocaleTest ${TEMP})
+set_tests_properties(NumericLocale PROPERTIES SKIP_RETURN_CODE 77)
+
 ADD_EXECUTABLE(iteratorTests
     Testing/Logic/itkRegionOfInterestImageFilterTest.cxx
     Testing/Logic/itkIteratorTests.cxx
