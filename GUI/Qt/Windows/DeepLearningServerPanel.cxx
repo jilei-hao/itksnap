@@ -18,6 +18,7 @@
 #include "SSHTunnelWorkerThread.h"
 #include <QMessageBox>
 #include <QInputDialog>
+#include <QDialogButtonBox>
 #include <QShowEvent>
 #include <QFont>
 #include <QPixmap>
@@ -178,7 +179,7 @@ DeepLearningServerPanel::setupSSHTunnel()
   m_Model->SetTunnelStatus(dls_model::TunnelStatus(dls_model::TUNNEL_ESTABLISHING));
 
   // Start the thread - this means that the server will start connecting
-  qDebug() << "Starting SSH tunnel thread for " << p->GetHostname() << " port " << p->GetPort();
+  qDebug() << "Starting SSH tunnel thread for " << QString::fromStdString(p->GetHostname()) << " port " << p->GetPort();
   m_SSHTunnelWorkerThread->start();
 }
 
