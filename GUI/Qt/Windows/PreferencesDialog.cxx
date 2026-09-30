@@ -17,6 +17,8 @@
 #include "QtWidgetActivator.h"
 #include "GlobalUIModel.h"
 #include "ColorMapModel.h"
+#include "QtUILanguage.h"
+#include "SNAPQtCommon.h"
 
 #include <QTreeView>
 #include <QPushButton>
@@ -116,6 +118,15 @@ PreferencesDialog::SetModel(GlobalPreferencesModel *model)
   makeCoupling(ui->chkSyncPan, dbs->GetSyncPanModel());
   makeCoupling(ui->chkCheckForUpdates, m_Model->GetCheckForUpdateModel());
   makeCoupling(ui->chkAutoContrast, dbs->GetAutoContrastModel());
+
+  // Language of the user interface. Each language is named in that language, so
+  // that someone who cannot read the current one can still find their own.
+  ui->inUILanguage->addItem(tr("Automatic (system language)"),
+                            QVariant::fromValue(std::string()));
+  for (const QString &code : GetAvailableUILanguages())
+    ui->inUILanguage->addItem(GetUILanguageNativeName(code),
+                              QVariant::fromValue(code.toStdString()));
+  makeCoupling(ui->inUILanguage, dbs->GetUILanguageModel());
 
   // Hook up the display layout properties
   GlobalDisplaySettings *gds = m_Model->GetGlobalDisplaySettings();

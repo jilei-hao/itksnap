@@ -55,6 +55,54 @@ font-weight:bold;</string>
           </attribute>
           <layout class="QVBoxLayout" name="verticalLayout_11">
            <item>
+            <layout class="QHBoxLayout" name="layoutUILanguage">
+             <item>
+              <widget class="QLabel" name="labelUILanguage">
+               <property name="text">
+                <string>Language:</string>
+               </property>
+               <property name="buddy">
+                <cstring>inUILanguage</cstring>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QComboBox" name="inUILanguage">
+               <property name="toolTip">
+                <string>The language of menus, dialogs and messages. Automatic uses the language of your system. The --lang command-line option overrides this setting.</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLabel" name="labelUILanguageNote">
+               <property name="text">
+                <string>Takes effect the next time ITK-SNAP starts</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="horizontalSpacerUILanguage">
+               <property name="orientation">
+                <enum>Qt::Orientation::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>40</width>
+                 <height>20</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="Line" name="lineUILanguage">
+             <property name="orientation">
+              <enum>Qt::Orientation::Horizontal</enum>
+             </property>
+            </widget>
+           </item>
+           <item>
             <widget class="QCheckBox" name="chkAutoContrast">
              <property name="toolTip">
               <string>When this option is checked, image contrast will be adjusted automatically based on the image histogram whenever a new image is loaded into ITK-SNAP.</string>

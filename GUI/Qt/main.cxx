@@ -13,12 +13,15 @@
 #include "QtIPCManager.h"
 #include "QtCursorOverride.h"
 #include "QtReporterDelegates.h"
+#include "QtUILanguage.h"
 #include "SNAPQtCommon.h"
 #include "SNAPTestQt.h"
 
 #include "GenericSliceModel.h"
 #include "SynchronizationModel.h"
 #include "GlobalUIModel.h"
+#include "GlobalState.h"
+#include "DefaultBehaviorSettings.h"
 
 #include "itkObject.h"
 #include "vtkObject.h"
@@ -1333,8 +1336,15 @@ main(int argc, char *argv[])
     // Load the user preferences
     gui->LoadUserPreferences();
 
+    // The language of the user interface comes from the --lang option, then the
+    // Language preference, then the system (#260)
+    QString pref_language = QString::fromStdString(
+      gui->GetGlobalState()->GetDefaultBehaviorSettings()->GetUILanguage());
+    UILanguageSource language_source = ChooseUILanguageSource(
+      QString::fromStdString(argdata.gui_language), pref_language, GetAvailableUILanguages());
+
     // Set the locale from the command line argument
-    if (argdata.gui_language.size())
+    if (language_source == UI_LANGUAGE_FROM_COMMAND_LINE)
     {
       QLocale::setDefault(QLocale(argdata.gui_language.c_str()));
       qDebug() << "ITK-SNAP using locale:" << QLocale().name();
@@ -1347,6 +1357,14 @@ main(int argc, char *argv[])
     {
       QLocale::setDefault(QLocale(QLocale::Chinese, QLocale::China));
       locale = QLocale();
+    }
+
+    // The Language preference chooses only the translation. Numbers and dates
+    // keep the format of the system region.
+    if (language_source == UI_LANGUAGE_FROM_PREFERENCES)
+    {
+      locale = QLocale(pref_language);
+      qDebug() << "ITK-SNAP using the language preference:" << locale.name();
     }
 
     QTranslator translator;

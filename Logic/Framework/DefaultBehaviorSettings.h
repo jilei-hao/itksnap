@@ -49,6 +49,11 @@ public:
   // URL for the remote server (TODO: this needs history, etc)
   irisSimplePropertyAccessMacro(DeepLearningServerURL, std::string)
 
+  // Language of the user interface, as the code of a translation (e.g., "de" or
+  // "zh_CN"). An empty string means the language is chosen from the system.
+  // The --lang command-line option overrides it. Read at startup only.
+  irisSimplePropertyAccessMacro(UILanguage, std::string)
+
 protected:
   // Default behaviors
   SmartPtr<ConcreteSimpleBooleanProperty> m_LinkedZoomModel;
@@ -74,6 +79,9 @@ protected:
 
   // Deep learning service
   SmartPtr<ConcreteSimpleStringProperty> m_DeepLearningServerURLModel;
+
+  // Language of the user interface
+  SmartPtr<ConcreteSimpleStringProperty> m_UILanguageModel;
 
   // Constructor
   DefaultBehaviorSettings();
