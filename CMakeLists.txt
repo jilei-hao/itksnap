@@ -715,6 +715,7 @@ SET(UI_QT_CXX
   GUI/Qt/Components/QtRendererPlatformSupport.cxx
   GUI/Qt/Components/QtReporterDelegates.cxx
   GUI/Qt/Components/QProcessOutputTextWidget.cxx
+  GUI/Qt/Components/QtUILanguage.cxx
   GUI/Qt/Components/QtWarningDialog.cxx
   GUI/Qt/Components/QtWidgetActivator.cxx
   GUI/Qt/Components/RecentHistoryItemsView.cxx
@@ -904,6 +905,7 @@ SET(UI_NONMOC_HEADERS
   GUI/Qt/Components/QtFrameBufferOpenGLWidget.h
   GUI/Qt/Components/QtRendererPlatformSupport.h
   GUI/Qt/Components/QtReporterDelegates.h
+  GUI/Qt/Components/QtUILanguage.h
   GUI/Qt/Components/SNAPQtCommon.h
   GUI/Qt/Coupling/TagListWidgetCoupling.h
   GUI/Qt/Coupling/QtAbstractButtonCoupling.h
@@ -1323,6 +1325,7 @@ SET(GUI_TESTS
   EchoCartesianDicomLoading
   LabelSmoothing
   PreferencesDialog
+  LanguagePreference
   ProbeIntensity
   RegionCompetition
   RandomForest
@@ -1366,6 +1369,15 @@ ADD_EXECUTABLE(iteratorTests
     Testing/Logic/iteratorTests.cxx)
 TARGET_LINK_LIBRARIES(iteratorTests ${ITK_LIBRARIES})
 TARGET_INCLUDE_DIRECTORIES(iteratorTests PUBLIC ${SNAP_INCLUDE_DIRS})
+
+# Test: the Language preference and the choice of user-interface language (#260)
+ADD_EXECUTABLE(TestUILanguage
+    Testing/GUI/Qt/TestUILanguage.cxx
+    GUI/Qt/Components/QtUILanguage.cxx)
+TARGET_LINK_LIBRARIES(TestUILanguage ${SNAP_EXTERNAL_LIBS} itksnaplogic Qt6::Core)
+TARGET_INCLUDE_DIRECTORIES(TestUILanguage PUBLIC ${SNAP_INCLUDE_DIRS})
+
+add_test(NAME UILanguage COMMAND TestUILanguage)
 
 add_test(NAME BasicSlicingTestX39 COMMAND itkTestDriver
   --compare ${TESTDATA_DIR}/X39.nii.gz ${TEMP}/X39.nii.gz

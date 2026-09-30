@@ -36,4 +36,7 @@ DefaultBehaviorSettings::DefaultBehaviorSettings()
 
   // Deep learning service
   m_DeepLearningServerURLModel = NewSimpleProperty("DeepLearningServer", std::string());
+
+  // Language of the user interface (empty: chosen from the system)
+  m_UILanguageModel = NewSimpleProperty("UILanguage", std::string());
 }
