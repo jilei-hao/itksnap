@@ -155,6 +155,26 @@ LoadSegmentationImageDelegate
       }
     else
       {
+      // A single time point replaces the current time point of the selected
+      // segmentation (IRISApplication::UpdateIRISSegmentationImage), so it must
+      // have that segmentation's dimensions, which need not be the main image's
+      LabelImageWrapper *target = m_Driver->GetSelectedSegmentationLayer();
+      if(target && !m_Driver->IsSnakeModeActive())
+        {
+        Vector3ui szSeg = szSeg4D.extract(3);
+        Vector3ui szTarget = target->GetSize();
+        if(szSeg != szTarget)
+          {
+          throw IRISException("Error: Mismatched Dimensions. "
+                              "The segmentation image has one time point, so it replaces the "
+                              "current time point of the selected segmentation. The size of the "
+                              "segmentation image (%d x %d x %d) does not match the size of the "
+                              "selected segmentation (%d x %d x %d).",
+                              szSeg[0], szSeg[1], szSeg[2],
+                              szTarget[0], szTarget[1], szTarget[2]);
+          }
+        }
+
       // Just issue a warning and proceed
       wl.push_back(IRISWarning(
                      "Warning: Mismatched number of time points."
