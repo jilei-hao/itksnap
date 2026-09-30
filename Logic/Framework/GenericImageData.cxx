@@ -146,8 +146,11 @@ GenericImageData::GetFullExtentImageRegion()
       to_double(layer->GetBufferedRegion().GetUpperIndex()) + 0.5
     };
 
-    // Map the eight corners of the region box into reference space
-    itk::ImageRegion<3> rgn_layer_ref_space;
+    // Map the eight corners of the region box into the continuous index of the
+    // reference space, and take their bounding box. Corners must not be rounded
+    // one at a time: when an axis of the layer runs against the reference's,
+    // its low corner maps to the high end.
+    Vector3d ci_min, ci_max;
     for(unsigned int corner = 0; corner < 8; ++corner)
     {
       Vector3d corner_point = { ext_layer[(corner & 1) ? 1 : 0][0],
@@ -160,20 +163,34 @@ GenericImageData::GetFullExtentImageRegion()
       auto pt_lps_tt = tran_ref->TransformPoint( tran_layer->GetInverseTransform()->TransformPoint(pt_lps) );
       auto ci_ref = ref->GetImageBase()->TransformPhysicalPointToContinuousIndex<double>(pt_lps_tt);
 
-      itk::ImageRegion<3> corner_region;
       for(unsigned int i = 0; i < 3; i++)
       {
-        corner_region.SetIndex(i, (long) std::floor(ci_ref[i] - 0.5));
-        corner_region.SetSize(i, 1);
+        ci_min[i] = (corner == 0) ? ci_ref[i] : std::min(ci_min[i], ci_ref[i]);
+        ci_max[i] = (corner == 0) ? ci_ref[i] : std::max(ci_max[i], ci_ref[i]);
       }
-
-      // Update the extents of the layer in reference space
-      // auto corner_idx = to_itkIndex(corner_ref - 0.5);
-      if(corner == 0)
-        rgn_layer_ref_space = corner_region;
-      else
-        expand_region(rgn_layer_ref_space, corner_region);
     }
+
+    // The layer covers the reference voxels whose centres (integer continuous
+    // index) lie in that box. The tolerance keeps a voxel whose centre is exactly
+    // on the edge of the box, which happens whenever one grid is a multiple of the
+    // other; without it, rounding error decides. For an oblique layer the box is
+    // that of its corners, so it may add a few voxels near the corners.
+    const double tol = 1.0e-6;
+    itk::ImageRegion<3> rgn_layer_ref_space;
+    bool covers_voxels = true;
+    for(unsigned int i = 0; i < 3; i++)
+    {
+      long lo = (long) std::ceil(ci_min[i] - tol);
+      long hi = (long) std::floor(ci_max[i] + tol);
+      if(hi < lo)
+        covers_voxels = false;
+      rgn_layer_ref_space.SetIndex(i, lo);
+      rgn_layer_ref_space.SetSize(i, hi < lo ? 0 : hi - lo + 1);
+    }
+
+    // A layer thinner than one reference voxel adds nothing
+    if(!covers_voxels)
+      continue;
 
     // Check if the extents overlap
     bool overlap = true;
