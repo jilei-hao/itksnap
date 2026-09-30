@@ -1183,8 +1183,11 @@ main(int argc, char *argv[])
   Q_INIT_RESOURCE(TestingScripts);
 
 
-  // Reset the locale to posix to avoid weird issues with NRRD files
-  std::setlocale(LC_NUMERIC, "POSIX");
+  // Read and write numbers with a decimal point, whatever the user's locale.
+  // NRRD headers are parsed with sscanf, which follows LC_NUMERIC. On Windows,
+  // the ".UTF8" locale set above would otherwise read 0.4 as 0 (#256).
+  if(!SystemInterface::UseCNumericLocale())
+    std::cerr << "Warning: could not set the numeric locale to C" << std::endl;
 
   // Force use of native OpenGL, since all of our functions and VTK use native
   // and cannot use ANGLE
