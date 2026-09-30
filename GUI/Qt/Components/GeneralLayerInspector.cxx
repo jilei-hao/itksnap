@@ -69,6 +69,7 @@ void GeneralLayerInspector::SetModel(LayerGeneralPropertiesModel *model)
   makeCoupling(ui->sliderTP, m_Model->GetParentModel()->GetCursorTimePointModel());
   makeCoupling(ui->spinBoxTP, m_Model->GetParentModel()->GetCursorTimePointModel());
   makeCoupling(ui->inTPNickname, m_Model->GetCrntTimePointNicknameModel());
+  makeCoupling(ui->inTPCardiacPhase, m_Model->GetCrntTimePointCardiacPhaseModel());
   makeCoupling(ui->TPTagsWidget, m_Model->GetCrntTimePointTagListModel());
   makeCoupling((QAbstractButton *)ui->btn4DReplay, m_Model->GetParentModel()->GetGlobalState()->Get4DReplayModel());
   makeCoupling(ui->in4DReplayInterval, m_Model->GetParentModel()->GetGlobalState()->Get4DReplayIntervalModel());

@@ -85,6 +85,13 @@
 #include <iomanip>
 #include <type_traits>
 #include <vector>
+#include <cmath>
+#include <cctype>
+#include <cstring>
+#include <set>
+#include "itkMetaDataObject.h"
+#include "itksys/SystemTools.hxx"
+#include "json/json.h"
 
 // Platform-specific headers for available memory query (used in image size check)
 #if defined(__APPLE__)
@@ -98,6 +105,340 @@
 
 
 using namespace std;
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Cardiac 4D (4D CTA) phase-axis metadata.
+//
+// The cardiac phase axis (%R-R per time point) is carried through the in-memory
+// image via the ITK MetaDataDictionary, using the namespaced string keys below.
+// The dictionary already flows read -> ImageWrapper::m_Image4D (the scalar cast
+// copies it) and is the format-agnostic carrier consumed by the writers
+// (e.g. SaveNrrdSequence). Keys are plain identifiers (no spaces, no "gggg|eeee"
+// shape) so they never collide with DICOM tag keys and round-trip cleanly as
+// NRRD "key:=value" fields.
+// ---------------------------------------------------------------------------
+const char *ITKSNAP_CARDIAC_RR_PERCENT = "ITKSNAP_Cardiac_RRPercent";   // space-sep %R-R, one per time point
+const char *ITKSNAP_CARDIAC_RR_SOURCE  = "ITKSNAP_Cardiac_RRPercentSource"; // "series_description" | "none"
+const char *ITKSNAP_CARDIAC_RR_EXACT   = "ITKSNAP_Cardiac_RRPercentExact";  // "1" if uniform integer step, else "0"
+const char *ITKSNAP_CARDIAC_NUM_PHASES = "ITKSNAP_Cardiac_NumberOfPhases";  // number of time points
+
+// Generic per-time-point frame axis, modality-agnostic: one labeled value per
+// time point with a unit. 4D CTA fills it with %R-R (unit "%"); 4D echo fills it
+// with elapsed frame time (unit "ms"). The writers/GUI consume these so both
+// modalities are handled uniformly; the ITKSNAP_Cardiac_* keys above remain as
+// CT-specific provenance.
+const char *ITKSNAP_FRAME_AXIS_VALUES = "ITKSNAP_FrameAxis_Values"; // space-sep, one per time point
+const char *ITKSNAP_FRAME_AXIS_UNIT   = "ITKSNAP_FrameAxis_Unit";   // e.g. "%" or "ms"
+const char *ITKSNAP_FRAME_AXIS_LABEL  = "ITKSNAP_FrameAxis_Label";  // e.g. "%R-R" or "time"
+
+// Derived cardiac phase axis. rr_percent is empty when the range could not be
+// recovered (source == "none"), in which case the temporal axis falls back to
+// the historical 0.05 cardiac-cycle-fraction step.
+struct CardiacPhaseAxis
+{
+  std::vector<double> rr_percent;     // %R-R per phase (empty if unknown)
+  bool                exact = false;  // true when the step is a clean integer %
+  double              start_fraction = 0.0;   // origin of the time axis (cycle fraction)
+  double              step_fraction  = 0.05;  // spacing of the time axis (cycle fraction)
+  std::string         source = "none";
+};
+
+// Parse a "<start> - <end> %" range out of a DICOM SeriesDescription such as
+// "Func DS_CorCTA 0.5 Bv36 4  0 - 95 %", "DS_CORCTA_FUNC_5 - 95 %_0.75", or
+// "DS_CORCTA_FUNC_0-95%". Anchors on the last '%' and reads the two numbers
+// preceding it, so unrelated numbers earlier in the string are ignored.
+bool ParseCardiacRRRange(const std::string &desc, double &start, double &end)
+{
+  std::size_t pct = desc.rfind('%');
+  if (pct == std::string::npos || pct == 0)
+    return false;
+
+  long i = static_cast<long>(pct) - 1;
+  auto skipBlanks = [&](long &k) { while (k >= 0 && (desc[k] == ' ' || desc[k] == '\t')) --k; };
+  auto readNumberBackward = [&](long &k, double &val) -> bool
+    {
+    long e = k;
+    while (k >= 0 && (std::isdigit(static_cast<unsigned char>(desc[k])) || desc[k] == '.')) --k;
+    long s = k + 1;
+    if (s > e) return false;
+    try { val = std::stod(desc.substr(s, e - s + 1)); }
+    catch (...) { return false; }
+    return true;
+    };
+
+  skipBlanks(i);
+  if (!readNumberBackward(i, end)) return false;
+  skipBlanks(i);
+  if (i < 0 || desc[i] != '-') return false;
+  --i;
+  skipBlanks(i);
+  if (!readNumberBackward(i, start)) return false;
+
+  return end >= start;
+}
+
+// Derive the cardiac phase axis from the SeriesDescription range and the number
+// of phases. For n phases the %R-R values are linspace(start, end, n).
+CardiacPhaseAxis DeriveCardiacPhaseAxis(const std::string &seriesDesc, unsigned int nPhases)
+{
+  CardiacPhaseAxis axis;
+  double start = 0.0, end = 0.0;
+  if (nPhases == 0 || !ParseCardiacRRRange(seriesDesc, start, end))
+    return axis;  // source == "none", fallback temporal axis
+
+  axis.source = "series_description";
+  double step = (nPhases > 1) ? (end - start) / (nPhases - 1) : 0.0;
+  axis.rr_percent.resize(nPhases);
+  for (unsigned int k = 0; k < nPhases; ++k)
+    axis.rr_percent[k] = start + k * step;
+
+  axis.exact = (nPhases <= 1) || (std::fabs(step - std::round(step)) < 1e-6);
+  axis.start_fraction = start / 100.0;
+  axis.step_fraction  = (nPhases > 1) ? (step / 100.0) : 0.05;
+  return axis;
+}
+
+// Join doubles into a compact space-separated string ("0 5 10 ... 95").
+std::string JoinDoubles(const std::vector<double> &v)
+{
+  std::ostringstream ss;
+  ss << std::setprecision(10);
+  for (std::size_t i = 0; i < v.size(); ++i)
+    {
+    if (i) ss << ' ';
+    ss << v[i];
+    }
+  return ss.str();
+}
+
+// Parse a space-separated list of doubles (inverse of JoinDoubles).
+std::vector<double> ParseDoubleList(const std::string &s)
+{
+  std::vector<double> out;
+  std::istringstream ss(s);
+  double v;
+  while (ss >> v) out.push_back(v);
+  return out;
+}
+
+// Replace a known NIfTI image extension with ".json" to form the sidecar path
+// (foo.nii.gz -> foo.json). Falls back to appending ".json".
+std::string NiftiSidecarPath(const std::string &imagePath)
+{
+  static const char *exts[] = { ".nii.gz", ".nia.gz", ".nii", ".nia" };
+  for (const char *e : exts)
+    {
+    std::size_t n = std::strlen(e), L = imagePath.size();
+    if (L >= n && imagePath.compare(L - n, n, e) == 0)
+      return imagePath.substr(0, L - n) + ".json";
+    }
+  return imagePath + ".json";
+}
+
+// Write a JSON sidecar carrying the per-frame axis (CT %R-R / echo time) and
+// slice thickness next to a NIfTI image. NIfTI's header has no per-frame list or
+// slice-thickness field, so the sidecar is the authoritative record for them.
+// No-op if the image carries neither. Returns the sidecar path, or "" if none.
+std::string WriteCardiacJsonSidecar(const std::string &imagePath,
+                                    const itk::MetaDataDictionary &dict)
+{
+  // Frame axis: prefer the generic keys, fall back to the legacy %R-R keys.
+  std::string axisStr, axisUnit, axisLabel, source, exact, thickStr;
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_VALUES, axisStr);
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_UNIT, axisUnit);
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_LABEL, axisLabel);
+  if (axisStr.empty())
+    {
+    itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_PERCENT, axisStr);
+    if (!axisStr.empty()) { axisUnit = "%"; axisLabel = "%R-R"; }
+    }
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_SOURCE, source);
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_EXACT, exact);
+  itk::ExposeMetaData<std::string>(dict, "0018|0050", thickStr); // SliceThickness (mm)
+
+  std::vector<double> axisVals = ParseDoubleList(axisStr);
+  if (axisVals.empty() && thickStr.empty())
+    return std::string();
+
+  Json::Value root;
+  if (!axisVals.empty())
+    {
+    Json::Value arr(Json::arrayValue);
+    for (double v : axisVals) arr.append(v);
+    root["FrameAxisValues"] = arr;
+    root["FrameAxisUnit"]   = axisUnit;
+    root["FrameAxisLabel"]  = axisLabel;
+    root["NumberOfFrames"]  = (Json::UInt) axisVals.size();
+    if (!source.empty()) root["Source"] = source;
+    if (!exact.empty())  root["Exact"]  = (exact == "1");
+    }
+  if (!thickStr.empty())
+    {
+    try { root["SliceThickness"] = std::stod(thickStr); } catch (...) {}
+    }
+
+  std::string sidecar = NiftiSidecarPath(imagePath);
+  std::ofstream f(sidecar.c_str());
+  if (!f.is_open())
+    return std::string();
+  Json::StreamWriterBuilder wb;
+  wb["indentation"] = "  ";
+  f << Json::writeString(wb, root) << "\n";
+  return sidecar;
+}
+
+// Read a JSON sidecar (written by WriteCardiacJsonSidecar) next to a NIfTI image
+// and inject its contents into the dictionary, so a NIfTI reload recovers the
+// per-frame axis + slice thickness that NIfTI itself cannot store in-header.
+// No-op when the sidecar is absent or unparseable. Returns true if anything was
+// injected.
+bool ReadCardiacJsonSidecar(const std::string &imagePath, itk::MetaDataDictionary &dict)
+{
+  std::string sidecar = NiftiSidecarPath(imagePath);
+  if (!itksys::SystemTools::FileExists(sidecar.c_str()))
+    return false;
+
+  std::ifstream f(sidecar.c_str());
+  if (!f.is_open())
+    return false;
+
+  Json::CharReaderBuilder rb;
+  Json::Value root;
+  std::string errs;
+  if (!Json::parseFromStream(rb, f, &root, &errs) || !root.isObject())
+    return false;
+
+  bool injected = false;
+
+  const Json::Value &vals = root["FrameAxisValues"];
+  if (vals.isArray() && vals.size() > 0)
+    {
+    std::vector<double> v;
+    for (const auto &e : vals) v.push_back(e.asDouble());
+    std::string joined = JoinDoubles(v);
+    std::string unit  = root.get("FrameAxisUnit", "").asString();
+    std::string label = root.get("FrameAxisLabel", "").asString();
+    itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_VALUES, joined);
+    if (!unit.empty())  itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_UNIT, unit);
+    if (!label.empty()) itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_LABEL, label);
+    itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_CARDIAC_NUM_PHASES, std::to_string(v.size()));
+    if (unit == "%")
+      {
+      // Restore the legacy cardiac keys so CT consumers + the GUI "approx" flag
+      // round-trip too.
+      itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_PERCENT, joined);
+      if (root.isMember("Source"))
+        itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_SOURCE, root["Source"].asString());
+      if (root.isMember("Exact"))
+        itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_EXACT, root["Exact"].asBool() ? "1" : "0");
+      }
+    injected = true;
+    }
+
+  if (root.isMember("SliceThickness"))
+    {
+    std::ostringstream ss;
+    ss << std::setprecision(10) << root["SliceThickness"].asDouble();
+    itk::EncapsulateMetaData<std::string>(dict, "0018|0050", ss.str());
+    injected = true;
+    }
+
+  return injected;
+}
+
+// ---------------------------------------------------------------------------
+// Non-PHI metadata curation for export (requirement 2).
+//
+// A DICOM-sourced image carries the full DICOM dictionary, which ITK's NRRD /
+// MetaImage writers serialize verbatim — leaking PHI (patient name/ID 0010|*,
+// dates) on non-de-identified data. On export we replace it with a curated
+// allow-list of research-relevant, non-PHI public tags (+ our ITKSNAP_* keys),
+// and top-code age >=90 per HIPAA Safe Harbor. Allow-list (not deny-list) so an
+// unenumerated or private/free-text tag can never slip through. See
+// projects/4dcta_improvement/metadata_reference.md for the rationale.
+// ---------------------------------------------------------------------------
+const std::set<std::string> & CardiacExportKeepKeys()
+{
+  static const std::set<std::string> keep = {
+    // modality / scanner
+    "0008|0008","0008|0016","0008|0060","0008|0070","0008|1090","0018|1020",
+    // protocol / acquisition
+    "0008|103e","0018|0015","0018|0022","0018|1030","0018|1210","0018|5100",
+    // CT technique
+    "0018|0050","0018|0060","0018|0088","0018|1120","0018|1150","0018|1151",
+    "0018|1152","0018|9311",
+    // cardiac timing
+    "0018|1060","0018|1062","0018|1081","0018|1082","0018|1088","0018|1090",
+    "0020|9153","0020|9241",
+    // 4D echo / ultrasound (cine + cartesian calibration)
+    "0018|0040","0018|1063","0018|1242","0008|2144","0018|602c","0018|602e",
+    "0018|6024","0018|6026","0018|5010",
+    // geometry / indices
+    "0020|0011","0020|0012","0020|0013","0020|0032","0020|0037","0020|1041",
+    "0028|0030",
+    // intensity calibration
+    "0028|1050","0028|1051","0028|1052","0028|1053","0028|1054",
+    // pixel format
+    "0028|0002","0028|0004","0028|0010","0028|0011","0028|0100","0028|0101",
+    "0028|0103",
+    // research covariates (HIPAA: sex/size/weight non-identifiers; age top-coded)
+    "0010|0040","0010|1010","0010|1020","0010|1022","0010|1030",
+    // de-identification provenance + pseudonymous hierarchy UIDs
+    "0012|0062","0012|0063","0020|000d","0020|000e","0020|0052",
+  };
+  return keep;
+}
+
+// True if a dictionary key has the DICOM "gggg|eeee" shape.
+bool LooksLikeDicomKey(const std::string &k)
+{
+  if (k.size() != 9 || k[4] != '|') return false;
+  for (std::size_t i = 0; i < k.size(); ++i)
+    if (i != 4 && !std::isxdigit(static_cast<unsigned char>(k[i]))) return false;
+  return true;
+}
+
+// HIPAA Safe Harbor: ages over 89 must be aggregated to "90 or older".
+// DICOM Age String is "nnnY"/"nnnM"/"nnnW"/"nnnD"; only years can reach 90.
+std::string TopCodeAge(const std::string &age)
+{
+  if (age.size() >= 4 && (age[3] == 'Y' || age[3] == 'y'))
+    {
+    try { if (std::stoi(age.substr(0, 3)) >= 90) return "090Y"; }
+    catch (...) {}
+    }
+  return age;
+}
+
+// Curate a DICOM-sourced dictionary for export. No-op (returns src) when the
+// dictionary is not DICOM-shaped, so custom keys on non-DICOM images survive.
+itk::MetaDataDictionary CurateDicomDictionaryForExport(const itk::MetaDataDictionary &src)
+{
+  std::vector<std::string> keys = src.GetKeys();
+  bool hasDicom = false;
+  for (const auto &k : keys) if (LooksLikeDicomKey(k)) { hasDicom = true; break; }
+  if (!hasDicom) return src;
+
+  const std::set<std::string> &keep = CardiacExportKeepKeys();
+  itk::MetaDataDictionary out;
+  for (const auto &k : keys)
+    {
+    const bool isItksnap = (k.rfind("ITKSNAP_", 0) == 0);
+    if (!isItksnap && keep.find(k) == keep.end())
+      continue;
+    std::string v;
+    if (!itk::ExposeMetaData<std::string>(src, k, v))
+      continue; // skip non-string entries (DICOM/GDCM values are strings)
+    if (k == "0010|1010")
+      v = TopCodeAge(v);
+    itk::EncapsulateMetaData<std::string>(out, k, v);
+    }
+  return out;
+}
+
+} // anonymous namespace
 
 bool GuidedNativeImageIO::m_StaticDataInitialized = false;
 
@@ -614,19 +955,18 @@ GuidedNativeImageIO
 			gdcm::StringFilter sf;
 			sf.SetFile(file);
 
-			std::vector<double> ecd_spc;
-			try
+			// Parse each spacing tag independently with a safe fallback, so a missing
+			// or malformed tag cannot leave the vector short (which would make the
+			// SetSpacing loop below read out of bounds). In-plane/Z deltas are in cm
+			// (x10 -> mm); frame time is in ms (the time-axis spacing).
+			auto parseScaled = [&](const gdcm::Tag &t, double scale) -> double
 				{
-				ecd_spc.push_back(std::stod(sf.ToString(deltaX)) * 10.0);
-				ecd_spc.push_back(std::stod(sf.ToString(deltaY)) * 10.0);
-				ecd_spc.push_back(std::stod(sf.ToString(deltaZ)) * 10.0);
-				// frame time is the spacing along the time axis
-				ecd_spc.push_back(std::stod(sf.ToString(frameTime)));
-				}
-			catch (const std::exception &e)
-				{
-				std::cerr << e.what() << std::endl;
-				}
+				try { return std::stod(sf.ToString(t)) * scale; }
+				catch (const std::exception &) { return 1.0; }
+				};
+			std::vector<double> ecd_spc = {
+				parseScaled(deltaX, 10.0), parseScaled(deltaY, 10.0),
+				parseScaled(deltaZ, 10.0), parseScaled(frameTime, 1.0) };
 
 			// Set to 4d
 			m_IOBase->SetNumberOfDimensions(4);
@@ -645,19 +985,17 @@ GuidedNativeImageIO
       m_IOBase->SetDirection(2, std::vector<double>{0.0, 0.0, -1.0, 0.0}); // S
 			m_IOBase->SetDirection(3, std::vector<double>{0.0, 0.0, 0.0, 1.0});
 
-			std::vector<itk::ImageIOBase::SizeType> ecd_dim(4);
+			std::vector<itk::ImageIOBase::SizeType> ecd_dim(4, 1);
 
-			try
+			auto parseDim = [&](const gdcm::Tag &t) -> itk::ImageIOBase::SizeType
 				{
-				ecd_dim[0] = stol(sf.ToString(width));
-				ecd_dim[1] = stol(sf.ToString(height));
-				ecd_dim[2] = stol(sf.ToString(depth));
-				ecd_dim[3] = stol(sf.ToString(numVolumes));
-				}
-			catch (std::exception &e)
-				{
-				std::cerr << e.what() << std::endl;
-				}
+				try { return (itk::ImageIOBase::SizeType) std::stol(sf.ToString(t)); }
+				catch (const std::exception &) { return 1; }
+				};
+			ecd_dim[0] = parseDim(width);
+			ecd_dim[1] = parseDim(height);
+			ecd_dim[2] = parseDim(depth);
+			ecd_dim[3] = parseDim(numVolumes);
 
 			for (unsigned int i = 0; i < 4; ++i)
 				{
@@ -1132,6 +1470,20 @@ GuidedNativeImageIO
 			progSrc->AddProgress(readingDelta);
 			}
 
+		// Derive the cardiac phase axis (%R-R per time point) from the series.
+		// The %R-R range is encoded in the SeriesDescription (e.g. "... 0 - 95 %");
+		// combined with the number of phases it gives one %R-R value per frame.
+		// This replaces the previously hardcoded 50 ms temporal spacing and is
+		// carried forward (below) via the image MetaDataDictionary.
+		std::string seriesDesc;
+		{
+		const typename SeriesReaderType::DictionaryArrayType *descArr =
+			reader->GetMetaDataDictionaryArray();
+		if (descArr && descArr->size() > 0)
+			itk::ExposeMetaData<std::string>(*((*descArr)[0]), "0008|103e", seriesDesc);
+		}
+		CardiacPhaseAxis cardiacAxis = DeriveCardiacPhaseAxis(seriesDesc, frameContainer.size());
+
 		// assemble 3d images into the 4d native image
 		// -- set first 3 dimensions
 		typename GreyImage4DType::PointType origin4d;
@@ -1151,7 +1503,7 @@ GuidedNativeImageIO
 			region4d.SetSize(i, first3dImg->GetLargestPossibleRegion().GetSize()[i]);
 			}
 
-		origin4d[3] = 0;
+		origin4d[3] = cardiacAxis.start_fraction;
 
 		// Flip all image to RAS
 		if (first3dImg->GetDirection()(2,2) == 1)
@@ -1162,7 +1514,9 @@ GuidedNativeImageIO
 		direction4d(2,3) = 0;
 		direction4d(3,3) = 1;
 
-		spacing4d[3] = 0.05; // hardcode 50ms for now, should be extracted from the images
+		// Temporal spacing as a cardiac-cycle fraction (step between %R-R values).
+		// Falls back to 0.05 when the %R-R range could not be recovered.
+		spacing4d[3] = cardiacAxis.step_fraction;
 
 		// region Corner Index: [x, x, x, 0], Size: [x, x, x, nt]
 		region4d.SetIndex(3, 0);
@@ -1207,6 +1561,29 @@ GuidedNativeImageIO
 			reader->GetMetaDataDictionaryArray();
 		if(darr->size() > 0)
 			m_NativeImage->SetMetaDataDictionary(*((*darr)[0]));
+
+		// Store the derived cardiac phase axis into the image dictionary so it is
+		// carried through to the ImageWrapper and out to the writers (seq.nrrd /
+		// nrrd). Done after SetMetaDataDictionary so it is not overwritten.
+		{
+		itk::MetaDataDictionary &dict = m_NativeImage->GetMetaDataDictionary();
+		itk::EncapsulateMetaData<std::string>(
+			dict, ITKSNAP_CARDIAC_NUM_PHASES, std::to_string(frameContainer.size()));
+		if (!cardiacAxis.rr_percent.empty())
+			{
+			itk::EncapsulateMetaData<std::string>(
+				dict, ITKSNAP_CARDIAC_RR_PERCENT, JoinDoubles(cardiacAxis.rr_percent));
+			itk::EncapsulateMetaData<std::string>(
+				dict, ITKSNAP_CARDIAC_RR_SOURCE, cardiacAxis.source);
+			itk::EncapsulateMetaData<std::string>(
+				dict, ITKSNAP_CARDIAC_RR_EXACT, cardiacAxis.exact ? "1" : "0");
+			// Mirror into the modality-agnostic frame axis (unit = %R-R).
+			itk::EncapsulateMetaData<std::string>(
+				dict, ITKSNAP_FRAME_AXIS_VALUES, JoinDoubles(cardiacAxis.rr_percent));
+			itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_UNIT, std::string("%"));
+			itk::EncapsulateMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_LABEL, std::string("%R-R"));
+			}
+		}
 
 		progSrc->AddProgress(weightMisc);
 		progSrc->EndProgress();
@@ -1258,6 +1635,17 @@ GuidedNativeImageIO
 			unsigned long len = ecd_dim[0] * ecd_dim[1] * ecd_dim[2] * ecd_dim[3];
 
 			const gdcm::ByteValue *bv = de.GetByteValue();
+
+			// Guard: the pixel data must hold W*H*D*T bytes (uint8). A short/empty
+			// element would otherwise make GetBuffer below read past the end.
+			unsigned long bvLen = bv ? (unsigned long) bv->GetLength() : 0UL;
+			if (!bv || bvLen < len)
+				throw IRISException(
+					"Error: 4D echo pixel data is too small for the declared volume "
+					"(%lu bytes for %d x %d x %d x %d = %lu). The file may be truncated "
+					"or the Philips 3D dimension tags may be inconsistent.",
+					bvLen,
+					(int) ecd_dim[0], (int) ecd_dim[1], (int) ecd_dim[2], (int) ecd_dim[3], len);
 
 			// Start loading image
 			typename NativeImageType::Pointer ecd_image = NativeImageType::New();
@@ -1371,6 +1759,18 @@ GuidedNativeImageIO
 						}
 					}
 				}
+
+			// Modality-agnostic frame axis: echo is a real-time cine, so the
+			// per-frame values are elapsed time (0, ft, 2ft, ...) in milliseconds
+			// (ft = FrameTime = ecd_spc[3]). The writers/GUI consume these.
+			{
+			std::vector<double> times(ecd_dim[3]);
+			for (unsigned long t = 0; t < ecd_dim[3]; ++t)
+				times[t] = static_cast<double>(t) * ecd_spc[3];
+			itk::EncapsulateMetaData<std::string>(dico, ITKSNAP_FRAME_AXIS_VALUES, JoinDoubles(times));
+			itk::EncapsulateMetaData<std::string>(dico, ITKSNAP_FRAME_AXIS_UNIT, std::string("ms"));
+			itk::EncapsulateMetaData<std::string>(dico, ITKSNAP_FRAME_AXIS_LABEL, std::string("time"));
+			}
 
 			ecd_image->SetMetaDataDictionary(dico);
 
@@ -1545,6 +1945,14 @@ GuidedNativeImageIO
     m_NativeImage->SetDirection(direction);
     m_NativeImage->SetSpacing(spacing);
     }
+
+  // For 4D NIfTI, recover the per-frame axis (CT %R-R / echo time) and slice
+  // thickness from the JSON sidecar that SaveImage writes — NIfTI cannot store
+  // them in-header. NRRD/seq.nrrd carry them in-file and need no sidecar.
+  if ((m_FileFormat == FORMAT_NIFTI || m_FileFormat == FORMAT_ANALYZE)
+      && m_NativeImage
+      && m_NativeImage->GetLargestPossibleRegion().GetSize()[3] > 1)
+    ReadCardiacJsonSidecar(FileName, m_NativeImage->GetMetaDataDictionary());
 }
 
 template<typename TImageType>
@@ -1589,12 +1997,39 @@ GuidedNativeImageIO
   union { uint16_t i; uint8_t c[2]; } bint = {0x0102};
   const char *endian = (bint.c[0] == 0x01) ? "big" : "little";
 
-  // Build axis-0 index values: 0 1 2 ... T-1
+  // Build the axis-0 (frame) index values. Prefer the modality-agnostic frame
+  // axis carried in the image dictionary (CT: %R-R, unit "%"; echo: elapsed
+  // frame time, unit "ms"); fall back to the legacy cardiac %R-R keys, then to
+  // plain ordinals 0..T-1.
+  const itk::MetaDataDictionary &dict = image->GetMetaDataDictionary();
+  std::string axisStr, axisUnit, axisLabel, rrSource, rrExact;
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_VALUES, axisStr);
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_UNIT, axisUnit);
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_FRAME_AXIS_LABEL, axisLabel);
+  if (axisStr.empty())
+    {
+    itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_PERCENT, axisStr);
+    if (!axisStr.empty()) { axisUnit = "%"; axisLabel = "%R-R"; }
+    }
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_SOURCE, rrSource);
+  itk::ExposeMetaData<std::string>(dict, ITKSNAP_CARDIAC_RR_EXACT, rrExact);
+  std::vector<double> axisVals = ParseDoubleList(axisStr);
+  const bool haveAxis = (axisVals.size() == static_cast<std::size_t>(T));
+  const std::string frameLabel = (haveAxis && !axisLabel.empty()) ? axisLabel : "frame";
+
+  // Slice thickness (DICOM 0018,0050) — distinct from the Z voxel spacing.
+  std::string thickStr;
+  itk::ExposeMetaData<std::string>(dict, "0018|0050", thickStr);
+  double thickZ = 0.0; bool haveThick = false;
+  try { if (!thickStr.empty()) { thickZ = std::stod(thickStr); haveThick = true; } }
+  catch (...) { haveThick = false; }
+
   std::ostringstream axisIdxValues;
+  axisIdxValues << std::setprecision(10);
   for (long t = 0; t < T; ++t)
     {
     if (t > 0) axisIdxValues << ' ';
-    axisIdxValues << t;
+    axisIdxValues << (haveAxis ? axisVals[(std::size_t)t] : (double) t);
     }
 
   // Open file for binary writing
@@ -1625,13 +2060,32 @@ GuidedNativeImageIO
     << fmt3(spacing[1]*direction[1][0], spacing[1]*direction[1][1], spacing[1]*direction[1][2]) << " "
     << fmt3(spacing[2]*direction[2][0], spacing[2]*direction[2][1], spacing[2]*direction[2][2]) << "\n";
   f << "kinds: list domain domain domain\n";
+  // Slice thickness (through-plane PSF width) on the Z axis — native NRRD field
+  // (axes are frame, x, y, z) plus the DICOM key for ITK-SNAP's own round-trip.
+  if (haveThick)
+    f << "thicknesses: nan nan nan " << std::setprecision(10) << thickZ << "\n";
   f << "endian: " << endian << "\n";
   f << "encoding: raw\n";
-  f << "labels: \"frame\" \"\" \"\" \"\"\n";
+  f << "labels: \"" << frameLabel << "\" \"\" \"\" \"\"\n";
   f << "space origin: " << fmt3(origin[0], origin[1], origin[2]) << "\n";
   f << "measurement frame: (1,0,0) (0,1,0) (0,0,1)\n";
   f << "axis 0 index type:=numeric\n";
   f << "axis 0 index values:=" << axisIdxValues.str() << "\n";
+  if (haveAxis)
+    {
+    // Frame-axis metadata (round-trips as NRRD key:=value fields).
+    if (!axisUnit.empty())  f << "axis 0 index units:=" << axisUnit << "\n";
+    f << ITKSNAP_FRAME_AXIS_VALUES << ":=" << axisStr << "\n";
+    if (!axisUnit.empty())  f << ITKSNAP_FRAME_AXIS_UNIT  << ":=" << axisUnit << "\n";
+    if (!axisLabel.empty()) f << ITKSNAP_FRAME_AXIS_LABEL << ":=" << axisLabel << "\n";
+    f << ITKSNAP_CARDIAC_NUM_PHASES << ":=" << axisVals.size() << "\n";
+    // CT-specific provenance + legacy %R-R key (kept when the axis is %R-R).
+    if (axisUnit == "%")   f << ITKSNAP_CARDIAC_RR_PERCENT << ":=" << axisStr << "\n";
+    if (!rrSource.empty()) f << ITKSNAP_CARDIAC_RR_SOURCE  << ":=" << rrSource << "\n";
+    if (!rrExact.empty())  f << ITKSNAP_CARDIAC_RR_EXACT   << ":=" << rrExact << "\n";
+    }
+  if (haveThick)
+    f << "0018|0050:=" << thickStr << "\n"; // SliceThickness, for ITK-SNAP round-trip
   f << "\n"; // blank line ends NRRD header
 
   // Write raw pixel data
@@ -1700,6 +2154,14 @@ GuidedNativeImageIO
       }
     }
 
+  // Curate metadata for export: writers that serialize the dictionary (NRRD,
+  // MetaImage) would otherwise leak the full DICOM dict (PHI). Swap in a
+  // curated, non-PHI allow-list for the write, then restore the in-memory dict
+  // (curation is export-only; the inspector keeps full fidelity). No-op for
+  // non-DICOM dictionaries.
+  itk::MetaDataDictionary savedDict = image->GetMetaDataDictionary();
+  image->SetMetaDataDictionary(CurateDicomDictionaryForExport(savedDict));
+
   // Save the image
   typedef itk::ImageFileWriter<TImageType> WriterType;
   typename WriterType::Pointer writer = WriterType::New();
@@ -1709,6 +2171,15 @@ GuidedNativeImageIO
     writer->SetImageIO(m_IOBase);
   writer->SetInput(image);
   writer->Update();
+
+  // Restore the original in-memory dictionary.
+  image->SetMetaDataDictionary(savedDict);
+
+  // NIfTI cannot store a per-frame %R-R list in its header (only the uniform
+  // pixdim[4] already set from the 4D geometry). When the image carries a
+  // cardiac axis, also write a JSON sidecar with the authoritative %R-R array.
+  if (m_FileFormat == FORMAT_NIFTI || m_FileFormat == FORMAT_ANALYZE)
+    WriteCardiacJsonSidecar(FileName, savedDict);
 }
 
 

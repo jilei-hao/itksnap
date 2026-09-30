@@ -7,6 +7,7 @@
 #include "LayerTableRowModel.h"
 #include "TimePointProperties.h"
 #include "StandaloneMeshWrapper.h"
+#include <sstream>
 
 template class LayerAssociation<GeneralLayerProperties,
                                 WrapperBase,
@@ -66,6 +67,11 @@ LayerGeneralPropertiesModel::LayerGeneralPropertiesModel()
         this,
         &Self::GetCrntTimePointNicknameValue,
         &Self::SetCrntTimePointNicknameValue);
+
+  // Read-only: current time point cardiac phase (%R-R), no setter
+  m_CrntTimePointCardiacPhaseModel = wrapGetterSetterPairAsProperty(
+        this,
+        &Self::GetCrntTimePointCardiacPhaseValue);
 
   m_CrntTimePointTagListModel = wrapGetterSetterPairAsProperty(
         this,
@@ -561,6 +567,48 @@ SetCrntTimePointNicknameValue(std::string value)
 
   unsigned int crntTP = driver->GetCursorTimePoint() + 1;
 	m_TimePointProperties->GetProperty(crntTP)->SetNickname(value);
+}
+
+bool LayerGeneralPropertiesModel::
+GetCrntTimePointCardiacPhaseValue(std::string &value)
+{
+  auto driver = m_ParentModel->GetDriver();
+  if (!driver->IsMainImageLoaded() || driver->GetNumberOfTimePoints() <= 1)
+    return false;
+
+  unsigned int crntTP = driver->GetCursorTimePoint() + 1;
+  TimePointProperty *tpp = m_TimePointProperties->GetProperty(crntTP);
+  if (!tpp)
+    return false;
+
+  // Prefer the modality-agnostic frame axis (CT: %R-R; echo: frame time in ms).
+  std::ostringstream oss;
+  if (tpp->HasFrameValue())
+    {
+    if (tpp->GetFrameUnit() == "%")
+      {
+      oss << tpp->GetFrameValue() << "% R-R";
+      if (tpp->HasRRPercent() && !tpp->GetRRPercentExact())
+        oss << " (approx)";
+      }
+    else
+      {
+      oss << tpp->GetFrameValue();
+      if (!tpp->GetFrameUnit().empty())
+        oss << ' ' << tpp->GetFrameUnit();
+      }
+    }
+  else if (tpp->HasRRPercent()) // back-compat: workspace without a frame axis
+    {
+    oss << tpp->GetRRPercent() << "% R-R";
+    if (!tpp->GetRRPercentExact())
+      oss << " (approx)";
+    }
+  else
+    return false;
+
+  value = oss.str();
+  return true;
 }
 
 bool LayerGeneralPropertiesModel::
