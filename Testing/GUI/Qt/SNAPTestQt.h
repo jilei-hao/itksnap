@@ -46,7 +46,10 @@ protected:
   // Acceleration factor
   double m_Acceleration;
 
-  void readScript(QString script_url, QString &script);
+  // Returns false if the script (or one of its includes) could not be read.
+  // Callers must not report success when this returns false -- application_exit()
+  // only queues a quit, so execution continues past a failed read.
+  bool readScript(QString script_url, QString &script);
 
 };
 
