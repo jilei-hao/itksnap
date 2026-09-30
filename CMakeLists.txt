@@ -1320,6 +1320,7 @@ MARK_AS_ADVANCED(SNAP_GUI_TEST_ACCEL)
 
 # The list of Qt animated GUI tests
 SET(GUI_TESTS
+  HarnessThreadSafety
   Workspace
   NaNs
   4DContinuousRendering
