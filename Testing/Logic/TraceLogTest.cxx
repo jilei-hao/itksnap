@@ -185,17 +185,33 @@ int CheckGuiLog(const std::string &dir)
   std::string              text;
   std::vector<Json::Value> events = ReadEvents(file, text);
   CHECK(events.size() && events[0]["user"].asString() == "gui-tester", "the pseudonym is recorded");
+  std::string app = events.size() ? events[0]["app"].asString() : "";
+  CHECK(app.find("ITK-SNAP") == 0 && app.find("ITK-SNAP", 1) == std::string::npos,
+        "the application is named once");
 
   int  key_slices = 0, paint_edits = 0, undos = 0, saves = 0, zoom_events = 0;
   bool zoom_merged = false;
-  bool to_paintbrush = false, zoomed = false, panned = false;
+  bool to_paintbrush = false, zoomed = false, panned = false, slider = false;
   int  last_axial_slice = -1;
   for (const Json::Value &ev : events)
   {
     std::string type = ev["type"].asString();
     const Json::Value &ctx = ev["ctx"];
+    if (type == "cursor")
+    {
+      for (const char *end : { "from", "to" })
+        for (Json::ArrayIndex i = 0; i < ev[end]["slices"].size(); i++)
+          CHECK(ev[end]["slices"][i].asInt() >= 0, "cursor events have real slice numbers");
+    }
+
     if (type == "tool" && ev["to"]["mode"].asString() == "paintbrush")
       to_paintbrush = true;
+    else if (type == "cursor" && ctx["action"].asString() == "slider")
+    {
+      CHECK(ctx["view"].asInt() == 0 && ctx["plane"].asString() == "axial",
+            "the slider slice change comes from the axial view");
+      slider |= ev["to"]["slices"][0] != ev["from"]["slices"][0];
+    }
     else if (type == "cursor" && ctx["action"].asString() == "keys")
     {
       CHECK(ctx["view"].asInt() == 0 && ctx["plane"].asString() == "axial",
@@ -235,6 +251,7 @@ int CheckGuiLog(const std::string &dir)
 
   CHECK(to_paintbrush, "switching to the paintbrush is recorded");
   CHECK(key_slices >= 3, "each keyboard slice change is recorded");
+  CHECK(slider, "the slice slider change is recorded, with its view");
   CHECK(zoomed, "the zoom is recorded, with its view");
   CHECK(zoom_merged && zoom_events <= 2, "the changes during the zoom drag are merged");
   CHECK(text.find("MRIcrop") == std::string::npos && text.find("TraceLogGUI_seg") == std::string::npos,

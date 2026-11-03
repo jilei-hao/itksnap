@@ -28,6 +28,8 @@
 #include <GlobalUIModel.h>
 #include <IRISException.h>
 #include <IRISApplication.h>
+#include <TraceLog.h>
+#include <TraceLogModel.h>
 #include <GenericImageData.h>
 #include <SNAPAppearanceSettings.h>
 #include <DisplayLayoutModel.h>
@@ -971,6 +973,8 @@ bool GenericSliceModel
 
 void GenericSliceModel::SetSlideIndexValue(int value)
 {
+  // The slice slider next to the view; the trace log records which view
+  TraceLog::ScopedContext trace(TraceLogModel::ViewContext(this, "slider"));
   this->UpdateSliceIndex(value);
 }
 

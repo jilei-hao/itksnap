@@ -160,7 +160,7 @@ TraceLogModel::GetTraceLogDirectory() const
 bool
 TraceLogModel::StartRecording(const std::string &user)
 {
-  std::string app = std::string("ITK-SNAP ") + SNAPSoftVersion;
+  std::string app = SNAPSoftVersion; // "ITK-SNAP <version>"
   try
   {
     // Finding the application data folder can fail (e.g. no APPDATA on Windows)
@@ -400,7 +400,17 @@ TraceLogModel::OnCursorUpdate()
   // on each slice can be read from the log. Dragging the crosshairs, or 4D
   // playback, moves the cursor many times a second; those changes are merged
   // like other state changes.
-  log->LogStateChange("cursor", "cursor", this->GetCursorState());
+  Json::Value state = this->GetCursorState();
+  for (Json::ArrayIndex i = 0; i < state["slices"].size(); i++)
+  {
+    if (state["slices"][i].asInt() < 0)
+    {
+      m_CursorNotReady = true;
+      return;
+    }
+  }
+
+  log->LogStateChange("cursor", "cursor", state);
   std::string action = log->GetContext()["action"].asString();
   if (action == "keys" || action == "scroll")
     log->FlushPendingState();
@@ -423,6 +433,15 @@ TraceLogModel::OnViewGeometryChange(itk::Object *source, const itk::EventObject 
       fields["plane"] = PlaneName(view);
       log->LogStateChange("view", "view:" + std::to_string(i), this->GetViewState(i), fields);
     }
+  }
+
+  // Once all the views are set up for a new image, the cursor's state is known
+  if (m_CursorNotReady && m_Parent->GetSliceModel(0)->IsSliceInitialized() &&
+      m_Parent->GetSliceModel(1)->IsSliceInitialized() &&
+      m_Parent->GetSliceModel(2)->IsSliceInitialized())
+  {
+    m_CursorNotReady = false;
+    log->PrimeState("cursor", this->GetCursorState());
   }
 }
 

@@ -142,6 +142,10 @@ protected:
 
   GlobalUIModel *m_Parent = nullptr;
   std::string m_Directory;
+
+  // The slice views were still being set up when the cursor last moved, so
+  // its state is taken again once they are (see OnViewGeometryChange)
+  bool m_CursorNotReady = false;
   std::unique_ptr<TraceLogReplay> m_Replay;
 };
 

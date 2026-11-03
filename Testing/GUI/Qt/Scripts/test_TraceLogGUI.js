@@ -2,12 +2,12 @@
 include("Library");
 
 // Records a trace log through the GUI. ITK-SNAP is started with --trace-log
-// (see CMakeLists.txt). The test changes slices with the keyboard, zooms and
-// pans with the mouse, paints two strokes, undoes one and saves the
-// segmentation. It then replays the saved log into a new, blank segmentation
-// and checks the result is the same. TraceLogGUICheck then reads the log and
-// checks that all of it was recorded with the view it happened in, and that
-// replaying the log rebuilds the saved segmentation.
+// (see CMakeLists.txt). The test changes slices with the keyboard and the
+// slider, zooms and pans with the mouse, paints two strokes, undoes one and
+// saves the segmentation. It then replays the saved log into a new, blank
+// segmentation and checks the result is the same. TraceLogGUICheck then reads
+// the log and checks that all of it was recorded with the view it happened in,
+// and that replaying the log rebuilds the saved segmentation.
 
 //=== Recording from the start shows in the window title
 engine.sleep(1000);
@@ -47,6 +47,11 @@ engine.sleep(300);
 engine.postKeyEvent(canvas, "PgUp");
 engine.sleep(300);
 engine.postKeyEvent(canvas, "PgDown");
+engine.sleep(500);
+
+//=== Move the slice slider next to the axial view
+var slice_now = engine.getChildProperty(panel0, "inSlicePosition", "value");
+engine.setChildProperty(panel0, "inSlicePosition", "value", slice_now - 4);
 engine.sleep(500);
 drag("right", 0.5, 0.5, 0.5, 0.3);
 drag("middle", 0.5, 0.5, 0.6, 0.6);

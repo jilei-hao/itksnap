@@ -68,7 +68,7 @@ JSON Lines: one JSON object per line. Every event has:
 | `seq`  | 1, 2, 3, ... in file order |
 | `ms`   | milliseconds since recording started (a steady clock) |
 | `type` | the kind of event, below |
-| `ctx`  | where it came from, when known: `view` (0-2 slice views, 3 the 3D view), `plane` (`axial`, `coronal`, `sagittal`, `3d`), `action` (`click`, `keys`, `scroll`, `zoom`, `pan`, `paint`, `polygon`, ...), the view's `slice` and `zoom`, and `rotated` if the views are freely rotated |
+| `ctx`  | where it came from, when known: `view` (0-2 slice views, 3 the 3D view), `plane` (`axial`, `coronal`, `sagittal`, `3d`), `action` (`click`, `keys`, `scroll`, `slider`, `zoom`, `pan`, `paint`, `polygon`, ...), the view's `slice` and `zoom`, and `rotated` if the views are freely rotated |
 
 ### Session and data
 
