@@ -93,6 +93,8 @@
 #include <QDragEnterEvent>
 #include <QUrl>
 #include <QFileDialog>
+#include <QInputDialog>
+#include "TraceLogModel.h"
 #include <QDesktopServices>
 #include <SNAPQtCommon.h>
 #include <QMimeData>
@@ -599,6 +601,24 @@ void MainImageWindow::Initialize(GlobalUIModel *model)
         model->GetDriver()->GetGlobalState()->Get4DReplayIntervalModel(),
         ValueChangedEvent(), this, SLOT(onModelUpdate(EventBucket)));
 
+  // Tools > Trace Log. Whether a trace is recording shows in the window title.
+  LatentITKEventNotifier::connect(
+        model->GetTraceLogModel(), ModelUpdateEvent(), this, SLOT(onModelUpdate(EventBucket)));
+  QMenu *trace_menu = new QMenu(tr("Trace Log"), this);
+  m_ActionTraceLogStart =
+    trace_menu->addAction(tr("Start Recording..."), this, SLOT(onTraceLogStartRecording()));
+  m_ActionTraceLogStop =
+    trace_menu->addAction(tr("Stop Recording"), this, SLOT(onTraceLogStopRecording()));
+  trace_menu->addSeparator();
+  m_ActionTraceLogReplay =
+    trace_menu->addAction(tr("Replay Trace Log..."), this, SLOT(onTraceLogReplay()));
+  ui->menuTools->addSeparator();
+  ui->menuTools->addMenu(trace_menu);
+  this->UpdateTraceLogActions();
+
+  // A replay needs an image, and edits the segmentation in the main mode only
+  activateOnFlag(m_ActionTraceLogReplay, m_Model, UIF_IRIS_WITH_BASEIMG_LOADED);
+
   // Set up activations - File menu
   activateOnFlag(ui->actionOpenMain, m_Model, UIF_IRIS_MODE);
   activateOnFlag(ui->menuRecent_Images, m_Model, UIF_IRIS_MODE);
@@ -751,6 +771,7 @@ void MainImageWindow::onModelUpdate(const EventBucket &b)
   bool replay_4d_changed = b.HasEvent(ValueChangedEvent(), m_Model->GetGlobalState()->Get4DReplayModel());
   bool replay_4d_interval_changed = b.HasEvent(ValueChangedEvent(),  m_Model->GetGlobalState()->Get4DReplayIntervalModel());
   bool ipc_uri_drop = b.HasEvent(IPCDropEvent(), m_Model->GetSynchronizationModel());
+  bool trace_log_changed = b.HasEvent(ModelUpdateEvent(), m_Model->GetTraceLogModel());
 
   if(main_changed)
     {
@@ -793,8 +814,22 @@ void MainImageWindow::onModelUpdate(const EventBucket &b)
   if(layers_changed || layers_meta_changed || selected_layer_changed)
     this->UpdateSelectedLayerActions();
 
-  if(layers_changed || layers_meta_changed || proj_file_changed || selected_seg_layer_changed)
+  if(layers_changed || layers_meta_changed || proj_file_changed || selected_seg_layer_changed ||
+     trace_log_changed)
     this->UpdateWindowTitle();
+
+  if(trace_log_changed)
+    {
+    this->UpdateTraceLogActions();
+
+    // Recording stops by itself if the log cannot be written
+    std::string error = m_Model->GetTraceLogModel()->GetWriteError();
+    if(error.size() && error != m_TraceLogErrorShown)
+      {
+      m_TraceLogErrorShown = error;
+      QMessageBox::warning(this, tr("Trace Log"), from_utf8(error));
+      }
+    }
 
   if(replay_4d_changed || replay_4d_interval_changed)
     this->Update4DReplay();
@@ -1123,6 +1158,129 @@ void MainImageWindow::UpdateRecentProjectsMenu()
 
 
 
+void MainImageWindow::UpdateTraceLogActions()
+{
+  bool recording = m_Model->GetTraceLogModel()->IsRecording();
+  m_ActionTraceLogStart->setEnabled(!recording);
+  m_ActionTraceLogStop->setEnabled(recording);
+}
+
+void MainImageWindow::onTraceLogStartRecording()
+{
+  bool    ok = false;
+  QString user = QInputDialog::getText(
+    this, tr("Record Trace Log"),
+    tr("ITK-SNAP will record each segmentation edit, with the voxels it changes, and how "
+       "you look at the image: zoom, pan, slice changes, contrast, tools and labels, with "
+       "the time of each. File names are not recorded. When you save a segmentation, the "
+       "log is saved next to it.\n\nEnter an ID for yourself that is not your name:"),
+    QLineEdit::Normal, QString(), &ok);
+  if(!ok)
+    return;
+
+  user = user.trimmed();
+  if(user.isEmpty())
+    user = "anonymous";
+
+  if(!m_Model->GetTraceLogModel()->StartRecording(to_utf8(user)))
+    QMessageBox::warning(this, tr("Trace Log"),
+                         tr("Could not create a trace log in %1.")
+                           .arg(from_utf8(m_Model->GetTraceLogModel()->GetTraceLogDirectory())));
+}
+
+void MainImageWindow::onTraceLogStopRecording()
+{
+  TraceLogModel *trace = m_Model->GetTraceLogModel();
+  QString file = from_utf8(trace->GetFileName());
+  trace->StopRecording();
+  QMessageBox::information(
+    this, tr("Trace Log"),
+    tr("Recording stopped. A copy of the log is next to each segmentation saved while "
+       "recording; the whole session is in %1.").arg(file));
+}
+
+void MainImageWindow::onTraceLogReplay()
+{
+  QString file = QFileDialog::getOpenFileName(
+    this, tr("Replay Trace Log"), QString(), tr("Trace logs (*.jsonl);;All files (*)"));
+  if(file.isEmpty())
+    return;
+
+  TraceLogModel *trace = m_Model->GetTraceLogModel();
+  unsigned long  n = 0;
+  try
+    {
+    n = trace->PrepareReplay(to_utf8(file));
+    }
+  catch(std::exception &exc)
+    {
+    ReportNonLethalException(this, exc, tr("Cannot Replay Trace Log"));
+    return;
+    }
+
+  if(n == 0)
+    {
+    QMessageBox::information(this, tr("Replay Trace Log"),
+                             tr("The trace log has no edits to replay on this segmentation."));
+    return;
+    }
+
+  bool ok = false;
+  int  steps = QInputDialog::getInt(
+    this, tr("Replay Trace Log"),
+    tr("The log has %1 edits for this segmentation (undos and redos count as edits). "
+       "How many should be replayed?").arg(n),
+    (int)n, 1, (int)n, 1, &ok);
+  if(!ok)
+    return;
+
+  QMessageBox::information(this, tr("Replay Trace Log"),
+                           this->RunTraceLogReplay((unsigned long)steps));
+}
+
+QString MainImageWindow::RunTraceLogReplay(unsigned long steps)
+{
+  TraceLogModel::ReplayResult r = m_Model->GetTraceLogModel()->Replay(steps);
+  QString msg;
+  if(r.failed_seq && r.outside)
+    msg = tr("Replayed %1 of %2 edits. The next edit (event %3 in the log) lies outside "
+             "this segmentation, so it was not applied.")
+            .arg(r.applied_steps).arg(r.total_steps).arg(r.failed_seq);
+  else if(r.failed_seq)
+    msg = tr("Replayed %1 of %2 edits. The next edit (event %3 in the log) does not fit: "
+             "%4 of its voxels have a different label than the log expects, so this "
+             "segmentation differs from the one that was traced. That edit was not applied.")
+            .arg(r.applied_steps).arg(r.total_steps).arg(r.failed_seq).arg(r.mismatches);
+  else if(r.compared && r.final_matches)
+    msg = tr("Replayed all %1 edits. The result is identical to the segmentation that was "
+             "saved with this log.").arg(r.applied_steps);
+  else if(r.compared)
+    msg = tr("Replayed all %1 edits, but the result differs from the segmentation that was "
+             "saved with this log.").arg(r.applied_steps);
+  else
+    msg = tr("Replayed %1 of %2 edits.").arg(r.applied_steps).arg(r.total_steps);
+
+  return msg + " " + tr("The replayed edits can be undone, as far back as ITK-SNAP keeps "
+                        "undo steps.");
+}
+
+void MainImageWindow::ReplayTraceLogFile(QString file, int steps)
+{
+  // Like Tools > Trace Log > Replay, without the dialogs. The outcome is left
+  // in the property traceLogReplayResult.
+  QString msg;
+  try
+    {
+    unsigned long n = m_Model->GetTraceLogModel()->PrepareReplay(to_utf8(file));
+    msg = this->RunTraceLogReplay(steps < 0 ? n : (unsigned long)steps);
+    }
+  catch(std::exception &exc)
+    {
+    msg = from_utf8(exc.what());
+    }
+  this->setProperty("traceLogReplayResult", msg);
+}
+
 void MainImageWindow::UpdateWindowTitle()
 {
   GenericImageData *gid = m_Model->GetDriver()->GetIRISImageData();
@@ -1139,23 +1297,25 @@ void MainImageWindow::UpdateWindowTitle()
   if(m_Model->GetGlobalState()->GetProjectFilename().length())
     projfile = QFileInfo(from_utf8(m_Model->GetGlobalState()->GetProjectFilename())).fileName();
 
-  // Set up the window title. Long filenames are elided in the middle.
+  // Set up the window title. Long filenames are elided in the middle. While a
+  // trace log is recording, the title says so.
+  QString rec = m_Model->GetTraceLogModel()->IsRecording() ? tr("[Recording trace] ") : QString();
   if(projfile.length())
     {
     // If a project has multiple layers, we should indicate which segmentation image is being viewed
-    m_TitleElider->setTitle(tr("%1 - ITK-SNAP"), { projfile });
+    m_TitleElider->setTitle(rec + tr("%1 - ITK-SNAP"), { projfile });
     }
   else if(mainfile.length() && segfile.length())
     {
-    m_TitleElider->setTitle(tr("%1 - %2 - ITK-SNAP"), { mainfile, segfile });
+    m_TitleElider->setTitle(rec + tr("%1 - %2 - ITK-SNAP"), { mainfile, segfile });
     }
   else if(mainfile.length())
     {
-    m_TitleElider->setTitle(tr("%1 - New Segmentation - ITK-SNAP"), { mainfile });
+    m_TitleElider->setTitle(rec + tr("%1 - New Segmentation - ITK-SNAP"), { mainfile });
     }
   else
     {
-    m_TitleElider->setTitle(tr("ITK-SNAP"));
+    m_TitleElider->setTitle(rec + tr("ITK-SNAP"));
     }
 
   // Update the IPC instance directory slot with the full title

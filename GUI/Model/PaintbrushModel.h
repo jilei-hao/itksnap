@@ -5,6 +5,9 @@
 #include "GlobalState.h"
 #include <vtkSmartPointer.h>
 #include <vtkPoints2D.h>
+#include <array>
+#include <chrono>
+#include <vector>
 
 class GenericSliceModel;
 class BrushWatershedPipeline;
@@ -97,6 +100,12 @@ protected:
   // Apply brush logic if main is transformed
   // Returns true if changes were made
   bool ApplyBrushByPolygonRasterization(bool reverse_mode, bool dragging);
+
+  // The path of the current stroke, for the trace log: voxel x, y, z and the
+  // milliseconds since the stroke started. Kept only while a log is recording.
+  std::vector<std::array<int, 4>>       m_TraceStroke;
+  std::chrono::steady_clock::time_point m_TraceStrokeStart;
+  void AddTraceStrokePoint(bool start);
 
   friend class PaintbrushRenderer;
 

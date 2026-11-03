@@ -283,6 +283,8 @@ SET(LOGIC_CXX
   Logic/Framework/SegmentationAuditRecord.cxx
   Logic/Framework/SNAPImageData.cxx
   Logic/Framework/TimePointProperties.cxx
+  Logic/Framework/TraceLog.cxx
+  Logic/Framework/TraceLogReplay.cxx
   Logic/Framework/UndoDataManager_LabelType.cxx
   Logic/ImageWrapper/DisplayMappingPolicy.cxx
   Logic/ImageWrapper/ImageWrapperBase.cxx
@@ -417,6 +419,8 @@ SET(LOGIC_HEADERS
   Logic/Framework/SegmentationUpdateIterator.h
   Logic/Framework/SNAPImageData.h
   Logic/Framework/TimePointProperties.h
+  Logic/Framework/TraceLog.h
+  Logic/Framework/TraceLogReplay.h
   Logic/Framework/UndoDataManager.h
   Logic/Framework/UndoDataManager.txx
   Logic/ImageWrapper/DisplayMappingPolicy.h
@@ -580,6 +584,7 @@ SET(UI_GENERIC_CXX
   GUI/Model/SnakeWizardModel.cxx
   GUI/Model/StateManagement.cxx
   GUI/Model/SynchronizationModel.cxx
+  GUI/Model/TraceLogModel.cxx
   GUI/Model/UIAction.cxx
   GUI/Model/UIReporterDelegates.cxx
   GUI/Model/VoxelChangeReportModel.cxx
@@ -663,6 +668,7 @@ SET(UI_GENERIC_HEADERS
   GUI/Model/SnakeWizardModel.h
   GUI/Model/StateManagement.h
   GUI/Model/SynchronizationModel.h
+  GUI/Model/TraceLogModel.h
   GUI/Model/UIAction.h
   GUI/Model/UIReporterDelegates.h
   GUI/Model/UIState.h
@@ -1541,6 +1547,48 @@ TARGET_INCLUDE_DIRECTORIES(segmentation_audit_test PUBLIC ${SNAP_INCLUDE_DIRS})
 
 add_test(NAME SegmentationAuditRecordTest COMMAND segmentation_audit_test)
 
+# Logic-tier (Qt-free) test of trace log recording and replay. It leaves a
+# trace log and segmentation in ${TEMP}/TraceLogTest for the itksnap-wt test.
+ADD_EXECUTABLE(trace_log_test
+    Testing/Logic/TraceLogTest.cxx)
+TARGET_LINK_LIBRARIES(trace_log_test ${SNAP_EXTERNAL_LIBS} itksnaplogic)
+TARGET_INCLUDE_DIRECTORIES(trace_log_test PUBLIC ${SNAP_INCLUDE_DIRS})
+
+add_test(NAME TraceLogTest COMMAND trace_log_test ${TESTDATA_DIR} ${TEMP})
+set_tests_properties(TraceLogTest PROPERTIES FIXTURES_SETUP TraceLogData)
+
+# itksnap-wt rebuilds the saved segmentation from its trace log
+add_test(NAME TraceLogReplayCLI
+  COMMAND itksnap-wt
+    -trace-info "${TEMP}/TraceLogTest/seg.nii.gz.trace.jsonl"
+    -trace-replay "${TEMP}/TraceLogTest/seg.nii.gz.trace.jsonl" blank
+                  "${TEMP}/TraceLogTest/seg_replayed.nii.gz")
+set_tests_properties(TraceLogReplayCLI PROPERTIES
+  FIXTURES_REQUIRED TraceLogData
+  PASS_REGULAR_EXPRESSION "identical to the saved segmentation")
+
+# Replay from the segmentation file the second session started from, all
+# edits and only some
+add_test(NAME TraceLogReplayCLIFromFile
+  COMMAND itksnap-wt
+    -trace-replay "${TEMP}/TraceLogTest/seg2.nii.gz.trace.jsonl" "${TEMP}/TraceLogTest/seg.nii.gz"
+                  "${TEMP}/TraceLogTest/seg2_replayed.nii.gz"
+    -trace-replay "${TEMP}/TraceLogTest/seg.nii.gz.trace.jsonl" blank
+                  "${TEMP}/TraceLogTest/seg_first2.nii.gz" 2)
+set_tests_properties(TraceLogReplayCLIFromFile PROPERTIES
+  FIXTURES_REQUIRED TraceLogData
+  PASS_REGULAR_EXPRESSION "identical to the saved segmentation.*Replayed 2 of 8 edits")
+
+# A replay from a segmentation that is not the log's starting point fails
+add_test(NAME TraceLogReplayCLIWrongStart
+  COMMAND itksnap-wt
+    -trace-replay "${TEMP}/TraceLogTest/seg2.nii.gz.trace.jsonl" blank
+                  "${TEMP}/TraceLogTest/wrong.nii.gz")
+set_tests_properties(TraceLogReplayCLIWrongStart PROPERTIES
+  FIXTURES_REQUIRED TraceLogData
+  PASS_REGULAR_EXPRESSION "is not the one the trace log starts from")
+
+
 # Needs the same manifest as the main executable to get the UTF-8 process code page
 ADD_EXECUTABLE(nonascii_path_test
     Testing/Logic/NonAsciiPathTest.cxx ${SNAP_WIN32_MANIFEST})
@@ -1898,8 +1946,22 @@ SET_TESTS_PROPERTIES(WorkspaceToolSetActiveSeg PROPERTIES
   FIXTURES_SETUP WorkspaceActiveSegmentationData)
 
 ADD_SNAP_GUI_TEST(WorkspaceActiveSegmentation -w "${WT_ACTIVE_SEG_WORKSPACE}")
+
 SET_TESTS_PROPERTIES(WorkspaceActiveSegmentation PROPERTIES
   FIXTURES_REQUIRED WorkspaceActiveSegmentationData)
+
+# Record a trace log through the GUI, then check what it recorded and that it
+# replays to the saved segmentation (trace_log_test --check-gui)
+SET(TRACE_LOG_GUI_DIR "${TEMP}/TraceLogGUI")
+ADD_TEST(NAME TraceLogGUIClean
+  COMMAND ${CMAKE_COMMAND} -E rm -rf "${TRACE_LOG_GUI_DIR}")
+SET_TESTS_PROPERTIES(TraceLogGUIClean PROPERTIES FIXTURES_SETUP TraceLogGUIClean)
+ADD_SNAP_GUI_TEST(TraceLogGUI --trace-log --trace-user gui-tester --trace-dir "${TRACE_LOG_GUI_DIR}")
+SET_TESTS_PROPERTIES(TraceLogGUI PROPERTIES
+  FIXTURES_REQUIRED TraceLogGUIClean FIXTURES_SETUP TraceLogGUIData)
+ADD_TEST(NAME TraceLogGUICheck
+  COMMAND trace_log_test --check-gui "${TRACE_LOG_GUI_DIR}")
+SET_TESTS_PROPERTIES(TraceLogGUICheck PROPERTIES FIXTURES_REQUIRED TraceLogGUIData)
 
 # On Windows, let every test find the Qt and VTK DLLs by prepending their
 # directories to the inherited PATH (this must follow all ADD_TEST calls)

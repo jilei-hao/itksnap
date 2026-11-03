@@ -51,6 +51,7 @@
 #include "MeshManager.h"
 #include "MeshExportSettings.h"
 #include "SegmentationStatistics.h"
+#include "TraceLog.h"
 #include "RLEImageRegionIterator.h"
 #include "itkPasteImageFilter.h"
 #include "itkIdentityTransform.h"
@@ -109,6 +110,9 @@ IRISApplication ::IRISApplication()
   // Create a new system interface
   m_SystemInterface = new SystemInterface();
   m_HistoryManager = m_SystemInterface->GetHistoryManager();
+
+  // The trace log records nothing until it is started
+  m_TraceLog = TraceLog::New();
 
   // Create a color map preset manager
   m_ColorMapPresetManager = ColorMapPresetManager::New();
@@ -339,6 +343,7 @@ IRISApplication::UnloadSegmentation(ImageWrapperBase *seg)
     m_GlobalState->SetSelectedSegmentationLayerId(
       m_IRISImageData->GetFirstSegmentationLayer()->GetUniqueId());
   }
+  this->TraceSegmentationLayers();
 
   // Fire the appropriate event
   InvokeEvent(SegmentationChangeEvent());
@@ -353,6 +358,7 @@ IRISApplication::AddBlankSegmentation()
   // Add the blank layer and set it as selected
   LabelImageWrapper *new_seg = m_IRISImageData->AddBlankSegmentation(true);
   m_GlobalState->SetSelectedSegmentationLayerId(new_seg->GetUniqueId());
+  this->TraceSegmentationLayers();
 
   // Fire the appropriate event
   InvokeEvent(SegmentationChangeEvent());
@@ -410,6 +416,7 @@ IRISApplication ::ResetIRISSegmentationImage()
   // Update the selected segmentation image ID to that of the added blank image
   m_GlobalState->SetSelectedSegmentationLayerId(
     m_IRISImageData->GetFirstSegmentationLayer()->GetUniqueId());
+  this->TraceSegmentationLayers();
 
   // Fire the appropriate event
   InvokeEvent(SegmentationChangeEvent());
@@ -529,6 +536,9 @@ IRISApplication ::UpdateIRISSegmentationImage(GuidedNativeImageIO *io,
   // Iterate over the RLEs in the label image
   this->SetColorLabelsInSegmentationAsValid(seg_wrapper);
 
+  // The loaded content is the new starting point of this layer in the trace
+  this->TraceSegmentationLayers(seg_wrapper);
+
   // Let the GUI know that segmentation changed
   InvokeEvent(SegmentationChangeEvent());
 
@@ -591,6 +601,48 @@ IRISApplication::GetSegmentationAuditLogJSON(size_t since) const
   oss << "]}";
 
   return oss.str();
+}
+
+TraceLog *
+IRISApplication::GetTraceLog() const
+{
+  return m_TraceLog;
+}
+
+bool
+IRISApplication::StartTraceLog(const std::string &dir,
+                               const std::string &user,
+                               const std::string &app_version)
+{
+  if(!m_TraceLog->Start(dir, user, app_version))
+    return false;
+
+  // The starting point: the main image and each segmentation as it is now
+  m_TraceLog->LogMainImage(m_IRISImageData->IsMainLoaded() ? m_IRISImageData->GetMain() : nullptr);
+  for(LayerIterator it = m_IRISImageData->GetLayers(LABEL_ROLE); !it.IsAtEnd(); ++it)
+    m_TraceLog->LogLayer(dynamic_cast<LabelImageWrapper *>(it.GetLayer()), "present");
+
+  return true;
+}
+
+void
+IRISApplication::StopTraceLog()
+{
+  m_TraceLog->Stop();
+}
+
+void
+IRISApplication::TraceSegmentationLayers(LabelImageWrapper *loaded)
+{
+  if(!m_TraceLog->IsRecording())
+    return;
+
+  std::vector<LabelImageWrapper *> layers;
+  for(LayerIterator it = m_IRISImageData->GetLayers(LABEL_ROLE); !it.IsAtEnd(); ++it)
+    if(auto *seg = dynamic_cast<LabelImageWrapper *>(it.GetLayer()))
+      layers.push_back(seg);
+
+  m_TraceLog->TraceLayers(layers, loaded);
 }
 
 unsigned int
@@ -1068,6 +1120,12 @@ IRISApplication ::SetCurrentImageDataToIRIS()
   if (m_CurrentImageData != m_IRISImageData)
   {
     m_CurrentImageData = m_IRISImageData;
+    if(m_TraceLog->IsRecording())
+    {
+      Json::Value ev(Json::objectValue);
+      ev["mode"] = "main";
+      m_TraceLog->Log("mode", ev);
+    }
     m_CurrentImageData->SetCursorPositionRAS(m_SNAPImageData->GetCursorPositionRAS());
     InvokeEvent(MainImageDimensionsChangeEvent());
     InvokeEvent(ReferenceSpaceGeometryChangeEvent());
@@ -1092,6 +1150,20 @@ IRISApplication ::SetCurrentImageDataToSNAP()
 
     // Set the image data
     m_CurrentImageData = m_SNAPImageData;
+
+    // In the trace log, what follows (cursor, views, edits to the snake mode's
+    // own layers) is in the voxels of this region of interest, resampled
+    if(m_TraceLog->IsRecording())
+    {
+      Json::Value ev(Json::objectValue), size(Json::arrayValue);
+      Vector3ui   sz = m_SNAPImageData->GetMain()->GetSize();
+      for(unsigned int d = 0; d < 3; d++)
+        size.append(sz[d]);
+      ev["mode"] = "snake";
+      ev["roi"] = TraceLog::RegionToJSON(m_GlobalState->GetSegmentationROI());
+      ev["roi_resampled_size"] = size;
+      m_TraceLog->Log("mode", ev);
+    }
 
     // The cursor needs to be modified to point to the same location
     // as before, or to the center of the image
@@ -1715,6 +1787,10 @@ IRISApplication ::UpdateIRISMainImage(GuidedNativeImageIO *io, Registry *metadat
   // Load the image into the current image data object
   m_IRISImageData->SetMainImage(io);
 
+  // Record the image before the events that its loading causes
+  if(m_TraceLog->IsRecording())
+    m_TraceLog->LogMainImage(m_IRISImageData->GetMain());
+
   // Get a pointer to the resulting wrapper
   ImageWrapperBase *layer = m_IRISImageData->GetMain();
 
@@ -1771,6 +1847,9 @@ IRISApplication ::UpdateIRISMainImage(GuidedNativeImageIO *io, Registry *metadat
 
   // Reset timepoint properties
   m_IRISImageData->GetTimePointProperties()->CreateNewData();
+
+  // A new main image comes with a new, blank segmentation
+  this->TraceSegmentationLayers();
 
   // Fire the dimensions change event
   InvokeEvent(MainImageDimensionsChangeEvent());
@@ -1878,6 +1957,8 @@ IRISApplication ::SaveMetaDataAssociatedWithLayer(ImageWrapperBase *layer, int r
 void
 IRISApplication ::UnloadMainImage()
 {
+  bool was_loaded = m_CurrentImageData->IsMainLoaded();
+
   // Save the settings for this image
   if (m_CurrentImageData->IsMainLoaded())
   {
@@ -1918,6 +1999,12 @@ IRISApplication ::UnloadMainImage()
 
   // Reset the local history
   m_HistoryManager->ClearLocalHistory();
+
+  if(was_loaded && m_TraceLog->IsRecording())
+  {
+    m_TraceLog->LogMainImage(nullptr);
+    this->TraceSegmentationLayers();
+  }
 
   // Let everyone know that the main image is gone!
   InvokeEvent(MainImageDimensionsChangeEvent());

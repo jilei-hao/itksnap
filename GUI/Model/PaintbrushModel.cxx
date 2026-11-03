@@ -9,6 +9,47 @@
 #include "DeepLearningSegmentationModel.h"
 #include "PaintbrushSettingsModel.h"
 #include "IRISException.h"
+#include "TraceLog.h"
+#include "TraceLogModel.h"
+
+namespace
+{
+// Context of a paintbrush edit for the trace log: the view, the brush and the
+// path of the stroke
+Json::Value
+PaintbrushTraceContext(GenericSliceModel                     *view,
+                       const PaintbrushSettings              &pbs,
+                       bool                                   erase,
+                       const std::vector<std::array<int, 4>> &stroke)
+{
+  Json::Value ctx = TraceLogModel::ViewContext(view, stroke.empty() ? "paint_at_cursor" : "paint");
+  if (ctx.isNull())
+    return ctx;
+
+  Json::Value brush(Json::objectValue), path(Json::arrayValue);
+  brush["shape"] = pbs.shape == PAINTBRUSH_ROUND ? "round" : "square";
+  brush["size"] = pbs.radius * 2; // as shown in the brush panel
+  brush["mode"] = pbs.smart_mode == PAINTBRUSH_WATERSHED ? "adaptive"
+                  : pbs.smart_mode == PAINTBRUSH_DLS     ? "deep_learning"
+                                                         : "manual";
+  brush["3d"] = pbs.volumetric;
+  brush["isotropic"] = pbs.isotropic;
+  brush["chase"] = pbs.chase;
+  for (const auto &p : stroke)
+  {
+    Json::Value point(Json::arrayValue);
+    for (int v : p)
+      point.append(v);
+    path.append(point);
+  }
+
+  ctx["tool"] = "paintbrush";
+  ctx["brush"] = brush;
+  ctx["erase"] = erase;
+  ctx["stroke"] = path;
+  return ctx;
+}
+} // namespace
 
 
 PaintbrushModel::PaintbrushModel()
@@ -146,8 +187,18 @@ PaintbrushModel ::ProcessPushEvent(const Vector3d &xSlice, const Vector2ui &grid
                          "segmentation image, so this location cannot be painted.");
     }
 
-    // Check if the right button was pressed
-    ApplyBrush(reverse_mode, false, false);
+    // Check if the right button was pressed. With free rotation, each dab of
+    // the brush is committed as it is applied, so it needs the trace context
+    // here rather than in CommitDrawing.
+    m_TraceStroke.clear();
+    AddTraceStrokePoint(true);
+    {
+      TraceLog::ScopedContext trace(
+        HasMainImageTransformed()
+          ? PaintbrushTraceContext(m_Parent, GetEffectivePaintbrushSettings(), reverse_mode, m_TraceStroke)
+          : Json::Value());
+      ApplyBrush(reverse_mode, false, false);
+    }
 
     // Store the reverse mode
     m_ReverseMode = reverse_mode;
@@ -179,6 +230,12 @@ PaintbrushModel ::ProcessDragEvent(const Vector3d &xSlice,
     // To avoid reentry on mouse movement, clear m_IsEngaged before calling processing task
     if(release)
       m_IsEngaged = false;
+
+    // With free rotation, each dab is committed as it is applied (see above)
+    TraceLog::ScopedContext trace(
+      HasMainImageTransformed()
+        ? PaintbrushTraceContext(m_Parent, pbs, m_ReverseMode, m_TraceStroke)
+        : Json::Value());
 
     // The behavior is different for 'fast' regular brushes and adaptive brush. For the
     // adaptive brush, dragging is disabled.
@@ -215,6 +272,8 @@ PaintbrushModel ::ProcessDragEvent(const Vector3d &xSlice,
       // Store this as the last apply position
       m_LastApplyX = xSlice;
     }
+
+    AddTraceStrokePoint(false);
 
     // If the mouse is being released, we need to commit the drawing
     if (release)
@@ -257,6 +316,12 @@ PaintbrushModel::CommitDrawing()
   GlobalState       *gs = driver->GetGlobalState();
   PaintbrushSettings pbs = gs->GetPaintbrushSettings();
   LabelImageWrapper *seg = driver->GetSelectedSegmentationLayer();
+
+  // Edits made below (by the brush, or by a deep learning model it calls)
+  // are logged with the view, brush and stroke
+  TraceLog::ScopedContext trace(PaintbrushTraceContext(
+    m_Parent, GetEffectivePaintbrushSettings(), !m_TraceStroke.empty() && m_ReverseMode, m_TraceStroke));
+  m_TraceStroke.clear();
 
   // Handle the deep learning case. Deep learning interactions are along the
   // slice axes, so in free rotation mode the stroke is kept as drawn (the
@@ -329,8 +394,29 @@ PaintbrushModel::AcceptAtCursor()
 
   m_MousePosition = cursor;
   m_MouseInside = true;
+  m_TraceStroke.clear();
   ApplyBrush(false, true, true);
   CommitDrawing();
+}
+
+void
+PaintbrushModel::AddTraceStrokePoint(bool start)
+{
+  if (!TraceLog::GetActive())
+    return;
+
+  auto now = std::chrono::steady_clock::now();
+  if (start)
+  {
+    m_TraceStroke.clear();
+    m_TraceStrokeStart = now;
+  }
+
+  int ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(now - m_TraceStrokeStart).count();
+  std::array<int, 4> p = { m_MousePosition[0], m_MousePosition[1], m_MousePosition[2], ms };
+  if (m_TraceStroke.empty() || m_TraceStroke.back()[0] != p[0] ||
+      m_TraceStroke.back()[1] != p[1] || m_TraceStroke.back()[2] != p[2])
+    m_TraceStroke.push_back(p);
 }
 
 bool

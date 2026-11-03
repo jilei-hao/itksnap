@@ -35,6 +35,7 @@
 #include <AnnotationModel.h>
 #include <SnakeROIModel.h>
 #include <SliceWindowCoordinator.h>
+#include <TraceLogModel.h>
 #include <GenericImageData.h>
 #include <GuidedNativeImageIO.h>
 #include <ImageIODelegates.h>
@@ -205,6 +206,10 @@ GlobalUIModel::GlobalUIModel()
   // Synchronization model
   m_SynchronizationModel = SynchronizationModel::New();
   m_SynchronizationModel->SetParentModel(this);
+
+  // Trace log recording and replay
+  m_TraceLogModel = TraceLogModel::New();
+  m_TraceLogModel->SetParentModel(this);
 
   // Snake parameter model
   m_SnakeParameterModel = SnakeParameterModel::New();

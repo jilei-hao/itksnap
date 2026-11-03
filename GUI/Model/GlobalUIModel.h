@@ -66,6 +66,7 @@ class PaintbrushSettingsModel;
 class PolygonSettingsModel;
 class LayerGeneralPropertiesModel;
 class SynchronizationModel;
+class TraceLogModel;
 class SnakeParameterModel;
 class MeshExportModel;
 class MeshImportModel;
@@ -232,6 +233,9 @@ public:
 
   /** Model for multi-session sync */
   irisGetMacro(SynchronizationModel, SynchronizationModel *)
+
+  /** Model for recording and replaying trace logs */
+  irisGetMacro(TraceLogModel, TraceLogModel *)
 
   /** Model for snake parameter editing */
   irisGetMacro(SnakeParameterModel, SnakeParameterModel *)
@@ -459,6 +463,9 @@ protected:
 
   // Synchronization
   SmartPtr<SynchronizationModel> m_SynchronizationModel;
+
+  // Trace log
+  SmartPtr<TraceLogModel> m_TraceLogModel;
 
   // Snake parameters
   SmartPtr<SnakeParameterModel> m_SnakeParameterModel;

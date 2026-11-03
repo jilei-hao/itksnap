@@ -1,4 +1,5 @@
 #include "Generic3DModel.h"
+#include "TraceLog.h"
 #include "Generic3DRenderer.h"
 #include "GlobalUIModel.h"
 #include "IRISException.h"
@@ -364,6 +365,16 @@ bool Generic3DModel::AcceptAction()
 
   // Get the segmentation image
   LabelImageWrapper *seg = app->GetSelectedSegmentationLayer();
+
+  // Edits made here are logged as coming from the 3D view
+  Json::Value trace_ctx;
+  if (TraceLog::GetActive())
+  {
+    trace_ctx["view"] = 3;
+    trace_ctx["plane"] = "3d";
+    trace_ctx["tool"] = mode == SPRAYPAINT_MODE ? "spray" : mode == SCALPEL_MODE ? "scalpel" : "3d";
+  }
+  TraceLog::ScopedContext trace(trace_ctx);
 
   // Accept the current action
   if(mode == SPRAYPAINT_MODE)

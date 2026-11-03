@@ -146,6 +146,7 @@ public slots:
   // precision < 0 means exact comparison; precision >= 0 means numeric comparison within tolerance
   void validateValue(QVariant v1, QVariant v2, double precision = -1.0);
 
+  // eventType is "press", "release", "click" or "move" (a drag with the button held)
   void postMouseEvent(QObject *widget, double rel_x, double rel_y, QString eventType, QString button);
 
   void postKeyEvent(QObject *object, QString key);

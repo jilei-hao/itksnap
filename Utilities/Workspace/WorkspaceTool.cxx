@@ -49,6 +49,9 @@
 #include "itkMatrixOffsetTransformBase.h"
 #include "IRISException.h"
 #include "ColorLabelTable.h"
+#include "TraceLogReplay.h"
+#include "itkImageFileReader.h"
+#include "itkImageFileWriter.h"
 
 #include "IRISApplication.h"
 #include "AffineTransformHelper.h"
@@ -137,6 +140,13 @@ int usage(int rc)
   cout << "  -labels-set-name <id> <name>      : Set the descriptive name of one label (color preserved)" << endl;
   cout << "  -labels-set-color <id> <r> <g> <b>: Set the RGB color (0..255) of one label (name preserved)" << endl;
   cout << "  -labels-list                      : List labels as 'id<TAB>name<TAB>r<TAB>g<TAB>b'" << endl;
+  cout << "Trace log commands (logs recorded with Tools > Trace Log in ITK-SNAP)" << endl;
+  cout << "  -trace-info <log>                 : Describe a trace log: session, events, and what a replay" << endl;
+  cout << "                                      would rebuild" << endl;
+  cout << "  -trace-replay <log> <start> <out> [n]" << endl;
+  cout << "                                    : Rebuild the segmentation the log was saved with, starting" << endl;
+  cout << "                                      from segmentation <start> (or 'blank'), and write it to" << endl;
+  cout << "                                      <out>. With n, apply only the first n edits." << endl;
   cout << "Annotation object commands" << endl;
   cout << "  -annot-list                       : List all annotations in the workspace" << endl;
   cout << "Distributed segmentation server (DSS) user commands: " << endl;
@@ -363,6 +373,139 @@ int PrintTicketLog(int ticket_id, int id_start = 0)
   return id_start;
 } 
 
+
+void PrintTraceLogInfo(const string &file, ostream &os)
+{
+  TraceLogReplay replay;
+  replay.Read(file);
+
+  const Json::Value &s = replay.GetSession();
+  os << "Session:  " << s["session"].asString() << endl;
+  os << "User:     " << s["user"].asString() << endl;
+  os << "Started:  " << s["started"].asString() << " with " << s["app"].asString() << endl;
+  os << "Duration: " << replay.GetDurationMs() / 1000 << " s" << endl;
+  os << "Events:  ";
+  for(const auto &kv : replay.GetEventCounts())
+    os << " " << kv.first << "=" << kv.second;
+  os << endl;
+
+  const TraceLogReplay::LayerState &base = replay.GetBase();
+  os << "Replay:   segmentation layer " << replay.GetTargetLayer() << ", "
+     << replay.GetSteps().size() << " edits, starting from a segmentation that was "
+     << base.kind << " (" << base.size[0] << " x " << base.size[1] << " x " << base.size[2]
+     << ", " << base.tps << " time point(s), " << base.checksum << ")" << endl;
+  if(replay.GetFinalChecksum().size())
+    os << "Result:   " << replay.GetFinalChecksum() << " (as saved)" << endl;
+  else
+    os << "Result:   not saved after the last edit, so a replay cannot be checked" << endl;
+}
+
+void ReplayTraceLog(const string &file, const string &start, const string &out,
+                    long max_steps, ostream &os)
+{
+  typedef TraceLogReplay::LabelImage4D LabelImage4D;
+  typedef itk::Image<LabelType, 3> LabelImage3D;
+
+  TraceLogReplay replay;
+  replay.Read(file);
+  const TraceLogReplay::LayerState &base = replay.GetBase();
+  if(base.checksum.empty())
+    throw IRISException("The trace log has no segmentation with a starting point to replay.");
+
+  // The starting segmentation, read as 4D (a 3D file gets one time point)
+  LabelImage4D::Pointer seg;
+  if(start == "blank")
+    {
+    seg = replay.CreateBlankSegmentation();
+    }
+  else
+    {
+    typedef itk::ImageFileReader<LabelImage4D> ReaderType;
+    ReaderType::Pointer reader = ReaderType::New();
+    reader->SetFileName(start);
+    reader->Update();
+    seg = reader->GetOutput();
+    }
+
+  LabelImage4D::SizeType sz = seg->GetBufferedRegion().GetSize();
+  if(sz[0] != base.size[0] || sz[1] != base.size[1] || sz[2] != base.size[2] || sz[3] != base.tps)
+    throw IRISException("The starting segmentation is %lu x %lu x %lu with %lu time point(s), but "
+                        "the trace log starts from %u x %u x %u with %u.",
+                        (unsigned long) sz[0], (unsigned long) sz[1], (unsigned long) sz[2],
+                        (unsigned long) sz[3], base.size[0], base.size[1], base.size[2],
+                        base.tps);
+
+  std::string checksum = TraceLogReplay::ComputeChecksum(seg);
+  if(checksum != base.checksum)
+    throw IRISException("The starting segmentation (%s) is not the one the trace log starts "
+                        "from (%s, %s).", checksum.c_str(), base.checksum.c_str(),
+                        base.kind.c_str());
+
+  const std::vector<TraceLogReplay::Step> &steps = replay.GetSteps();
+  size_t n = (max_steps >= 0 && (size_t) max_steps < steps.size()) ? (size_t) max_steps : steps.size();
+  for(size_t i = 0; i < n; i++)
+    {
+    unsigned long mismatches = TraceLogReplay::ApplyStep(seg, steps[i]);
+    if(mismatches)
+      throw IRISException("Edit %lu of %lu (event %lu, %s \"%s\") does not fit: %lu voxels "
+                          "have a different label than the log expects.",
+                          (unsigned long) i + 1, (unsigned long) steps.size(), steps[i].seq,
+                          steps[i].kind.c_str(), steps[i].op.c_str(), mismatches);
+    }
+  os << "Replayed " << n << " of " << steps.size() << " edits" << endl;
+
+  // Write a single time point as a 3D image, like ITK-SNAP does
+  if(sz[3] == 1)
+    {
+    LabelImage3D::Pointer seg3 = LabelImage3D::New();
+    LabelImage3D::RegionType region;
+    LabelImage3D::SpacingType spacing;
+    LabelImage3D::PointType origin;
+    LabelImage3D::DirectionType direction;
+    for(unsigned int d = 0; d < 3; d++)
+      {
+      region.SetSize(d, sz[d]);
+      spacing[d] = seg->GetSpacing()[d];
+      origin[d] = seg->GetOrigin()[d];
+      for(unsigned int e = 0; e < 3; e++)
+        direction(d, e) = seg->GetDirection()(d, e);
+      }
+    seg3->SetRegions(region);
+    seg3->SetSpacing(spacing);
+    seg3->SetOrigin(origin);
+    seg3->SetDirection(direction);
+    seg3->Allocate();
+    std::copy(seg->GetBufferPointer(), seg->GetBufferPointer() + region.GetNumberOfPixels(),
+              seg3->GetBufferPointer());
+
+    typedef itk::ImageFileWriter<LabelImage3D> WriterType;
+    WriterType::Pointer writer = WriterType::New();
+    writer->SetInput(seg3);
+    writer->SetFileName(out);
+    writer->SetUseCompression(true);
+    writer->Update();
+    }
+  else
+    {
+    typedef itk::ImageFileWriter<LabelImage4D> WriterType;
+    WriterType::Pointer writer = WriterType::New();
+    writer->SetInput(seg);
+    writer->SetFileName(out);
+    writer->SetUseCompression(true);
+    writer->Update();
+    }
+
+  // Compare a full replay with what was saved. The result is written either
+  // way, so that a difference can be looked at.
+  if(n == steps.size() && replay.GetFinalChecksum().size())
+    {
+    std::string result = TraceLogReplay::ComputeChecksum(seg);
+    if(result != replay.GetFinalChecksum())
+      throw IRISException("The result (%s) differs from the saved segmentation (%s).",
+                          result.c_str(), replay.GetFinalChecksum().c_str());
+    os << "The result is identical to the saved segmentation (" << result << ")" << endl;
+    }
+}
 
 int main(int argc, char *argv[])
 {
@@ -811,6 +954,20 @@ int main(int argc, char *argv[])
         int g = cl.read_integer();
         int b = cl.read_integer();
         ws.SetLabelColor(id, r, g, b);
+        }
+
+      else if(arg == "-trace-info")
+        {
+        PrintTraceLogInfo(cl.read_existing_filename(), cout);
+        }
+
+      else if(arg == "-trace-replay")
+        {
+        string log = cl.read_existing_filename();
+        string start = cl.read_string();
+        string out = cl.read_output_filename();
+        long n = cl.command_arg_count() > 0 ? cl.read_integer() : -1;
+        ReplayTraceLog(log, start, out, n, cout);
         }
 
       else if(arg == "-labels-list")

@@ -1,4 +1,6 @@
 #include "PolygonDrawingModel.h"
+#include "TraceLog.h"
+#include "TraceLogModel.h"
 #include "DeepLearningSegmentationModel.h"
 #include "GenericImageData.h"
 #include "GlobalUIModel.h"
@@ -657,6 +659,24 @@ PolygonDrawingModel ::AcceptPolygon(std::vector<IRISWarning> &warnings)
   // Remove duplicates from the vertex array
   VertexIterator itEnd = std::unique(m_Vertices.begin(), m_Vertices.end(), PolygonVertexTest);
   m_Vertices.erase(itEnd, m_Vertices.end());
+
+  // The edit is logged with its view and the polygon (in slice coordinates)
+  Json::Value trace_ctx = TraceLogModel::ViewContext(m_Parent, "polygon");
+  if (!trace_ctx.isNull())
+  {
+    Json::Value vertices(Json::arrayValue);
+    for (const Vertex &v : m_Vertices)
+    {
+      Json::Value xy(Json::arrayValue);
+      xy.append(v.x);
+      xy.append(v.y);
+      vertices.append(xy);
+    }
+    trace_ctx["tool"] = "polygon";
+    trace_ctx["vertices"] = vertices;
+    trace_ctx["invert"] = m_Parent->GetDriver()->GetGlobalState()->GetPolygonInvert();
+  }
+  TraceLog::ScopedContext trace(trace_ctx);
 
   // Are we rendering into a 2D slice or into a rotated 3D volume?
   LabelImageWrapper *seg = this->m_Parent->GetDriver()->GetSelectedSegmentationLayer();

@@ -77,6 +77,7 @@ class LabelUseHistory;
 class ImageAnnotationData;
 class LabelImageWrapper;
 class ImageReadingProgressAccumulator;
+class TraceLog;
 
 template <class TPixel, class TLabel, int VDim> class RandomForestClassifier;
 template <class TPixel, class TLabel, int VDim> class RFClassificationEngine;
@@ -363,6 +364,32 @@ public:
    * segmentation is loaded.
    */
   std::string GetSegmentationAuditLogJSON(size_t since = 0) const;
+
+  /**
+   * Trace log of the session: every segmentation edit with the voxels it
+   * changed, and the view, cursor and tool changes around it (see TraceLog).
+   * Nothing is recorded until StartTraceLog is called.
+   */
+  TraceLog *GetTraceLog() const;
+
+  /**
+   * Start recording a trace log into a new file in dir. The user is a
+   * pseudonymous identifier. Records the main image and the current
+   * segmentation layers as the starting point. Returns false if the file
+   * cannot be created.
+   */
+  bool StartTraceLog(const std::string &dir, const std::string &user,
+                     const std::string &app_version);
+
+  /** Stop recording the trace log */
+  void StopTraceLog();
+
+  /**
+   * Tell the trace log which segmentation layers exist now, so that a layer
+   * added by any route gets a starting point. Pass a layer whose content was
+   * just read from a file (loaded or reloaded) as loaded.
+   */
+  void TraceSegmentationLayers(LabelImageWrapper *loaded = nullptr);
 
   /**
    * Paint an axis-aligned voxel region of the selected segmentation layer with
@@ -834,6 +861,10 @@ protected:
 
   // SystemInterface used to get things from the system
   SystemInterface *m_SystemInterface;
+
+  // Trace log of the session (see GetTraceLog)
+  SmartPtr<TraceLog> m_TraceLog;
+
 
   // History manager
   HistoryManager *m_HistoryManager;

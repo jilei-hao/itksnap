@@ -43,6 +43,7 @@
 #include "LabelImageWrapper.h"
 #include "UndoDataManager.h"
 #include "Rebroadcaster.h"
+#include "TraceLog.h"
 
 #include <string>
 
@@ -133,6 +134,15 @@ bool LabelImageWrapper::StoreUndoPoint(const char *text, UndoManagerDelta *delta
     m_NextCommitActor = SegmentationAuditRecord::HUMAN;
     }
 
+  // The trace log (if recording) keeps the changed voxels themselves, for
+  // every commit. A temporary commit is usually undone at once, but it can
+  // also be redone later, so a replay has to see it either way.
+  if(n_rles > 0)
+    if(TraceLog *log = TraceLog::GetActive())
+      log->LogSegmentationChange("edit", this->GetUniqueId(), m_TimePointIndex,
+                                 m_Image, um->GetLastCommit().GetDeltas(), +1,
+                                 text ? text : "", is_temporary ? nullptr : &m_LastAuditRecord);
+
   return n_rles > 0;
 }
 
@@ -164,6 +174,9 @@ void LabelImageWrapper::ClearUndoPoints()
   m_AuditLog.clear();
   m_UndoneAuditRecords.clear();
   m_HasLastAuditRecord = false;
+
+  if(TraceLog *log = TraceLog::GetActive())
+    log->LogUndoCleared(this->GetUniqueId());
 }
 
 void LabelImageWrapper::ClearUndoPointsForAllTimePoints()
@@ -174,6 +187,9 @@ void LabelImageWrapper::ClearUndoPointsForAllTimePoints()
   m_AuditLog.clear();
   m_UndoneAuditRecords.clear();
   m_HasLastAuditRecord = false;
+
+  if(TraceLog *log = TraceLog::GetActive())
+    log->LogUndoCleared(this->GetUniqueId());
 }
 
 bool LabelImageWrapper::IsUndoPossible()
@@ -230,6 +246,11 @@ void LabelImageWrapper::Undo()
   // pop the genuine record beneath it. Retained for Redo().
   if(commit.GetName() != TEMPORARY_UNDO_POINT_NAME)
     this->MoveAuditRecord(m_AuditLog, m_UndoneAuditRecords);
+
+  // The trace log records every undo, of temporary commits too
+  if(TraceLog *log = TraceLog::GetActive())
+    log->LogSegmentationChange("undo", this->GetUniqueId(), m_TimePointIndex,
+                               m_Image, commit.GetDeltas(), -1, commit.GetName(), nullptr);
 }
 
 bool LabelImageWrapper::IsRedoPossible()
@@ -286,6 +307,11 @@ void LabelImageWrapper::Redo()
       m_HasLastAuditRecord = true;
       }
     }
+
+  // The trace log records every redo, of temporary commits too
+  if(TraceLog *log = TraceLog::GetActive())
+    log->LogSegmentationChange("redo", this->GetUniqueId(), m_TimePointIndex,
+                               m_Image, commit.GetDeltas(), +1, commit.GetName(), nullptr);
 }
 
 const

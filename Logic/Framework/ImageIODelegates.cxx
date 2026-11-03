@@ -4,6 +4,8 @@
 #include "HistoryManager.h"
 #include "IRISImageData.h"
 #include "ImageWrapperTraits.h"
+#include "LabelImageWrapper.h"
+#include "TraceLog.h"
 #include <itkImageIOBase.h>
 #include <itkImageBase.h>
 #include <cmath>
@@ -460,6 +462,18 @@ void DefaultSaveImageDelegate
       {
       m_Driver->GetHistoryManager()->UpdateHistory(*it, fname, m_Track);
       }
+
+    // While a trace log is recording, keep a copy of it next to each saved
+    // segmentation
+    TraceLog *trace = m_Driver->GetTraceLog();
+    LabelImageWrapper *seg = dynamic_cast<LabelImageWrapper *>(m_Wrapper);
+    if(trace && trace->IsRecording() && seg && !trace->LogSegmentationSaved(seg, fname))
+      {
+      wl.push_back(IRISWarning("Warning: Trace log not saved."
+                               "The segmentation was saved, but its trace log could not be "
+                               "written to %s.",
+                               TraceLog::SidecarFileName(fname).c_str()));
+      }
     }
   catch(std::exception &exc)
     {
@@ -629,6 +643,9 @@ ReloadSegmentationWrapperDelegate
   // TODO: all this reload logic should sit inside of GenericImageData
   m_Driver->GetCurrentImageData()->OnSegmentationReload();
   old_image = nullptr;
+
+  // The reloaded content is the layer's new starting point in the trace log
+  m_Driver->TraceSegmentationLayers(labelWrapper);
 
   if(m_Wrapper == m_Driver->GetCurrentImageData()->GetActiveSegmentationLayer())
     m_Driver->GetCurrentImageData()->SetCursorPositionRAS(cursor);

@@ -586,8 +586,12 @@ void SNAPTestQt::postMouseEvent(QObject *object, double rel_x, double rel_y, QSt
       type = QEvent::MouseButtonPress;
     else if(eventType == "release")
       type = QEvent::MouseButtonRelease;
+    else if(eventType == "move")
+      type = QEvent::MouseMove;
 
-    QMouseEvent *event = new QMouseEvent(type, localPos, globalPos, btn, btn, Qt::NoModifier);
+    // A move during a drag has no button of its own; the button is held
+    Qt::MouseButton ev_btn = (type == QEvent::MouseMove) ? Qt::NoButton : btn;
+    QMouseEvent *event = new QMouseEvent(type, localPos, globalPos, ev_btn, btn, Qt::NoModifier);
     QApplication::postEvent(widget, event);
     }
 }

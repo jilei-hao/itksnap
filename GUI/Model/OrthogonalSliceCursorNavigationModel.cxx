@@ -32,9 +32,13 @@
 #include "GlobalUIModel.h"
 #include "SliceWindowCoordinator.h"
 #include "ImageCoordinateTransform.h"
+#include "TraceLog.h"
+#include "TraceLogModel.h"
 
 void OrthogonalSliceCursorNavigationModel::UpdateCursor(Vector2d x)
 {
+  TraceLog::ScopedContext trace(TraceLogModel::ViewContext(m_Parent, "click"));
+
   // Compute the position in slice coordinates
   Vector3d xClick = m_Parent->MapWindowToSlice(x);
 
@@ -65,6 +69,8 @@ void OrthogonalSliceCursorNavigationModel::UpdateCursor(Vector2d x)
 
 void OrthogonalSliceCursorNavigationModel::ProcessKeyNavigation(Vector3i dx)
 {
+  TraceLog::ScopedContext trace(TraceLogModel::ViewContext(m_Parent, "keys"));
+
   // Get the displacement in image space
   Vector3d dximg =
       m_Parent->GetDisplayToImageTransform()->TransformVector(to_double(dx));
@@ -97,6 +103,8 @@ void OrthogonalSliceCursorNavigationModel::EndPan() { }
 void OrthogonalSliceCursorNavigationModel
 ::ProcessZoomGesture(double scaleFactor)
 {
+  TraceLog::ScopedContext trace(TraceLogModel::ViewContext(m_Parent, "zoom"));
+
   // Get the slice coordinator
   SliceWindowCoordinator *coordinator =
       m_Parent->GetParentUI()->GetSliceCoordinator();
@@ -133,6 +141,8 @@ void
 OrthogonalSliceCursorNavigationModel
 ::ProcessPanGesture(Vector2d uvOffset)
 {
+  TraceLog::ScopedContext trace(TraceLogModel::ViewContext(m_Parent, "pan"));
+
   // Compute the start and end point in slice coordinates
   Vector3d zOffset = m_Parent->MapWindowOffsetToSliceOffset(uvOffset);
   Vector2d xOffset(zOffset[0] * m_Parent->GetReferenceSpaceSpacing()[0],
@@ -146,6 +156,8 @@ OrthogonalSliceCursorNavigationModel
 void OrthogonalSliceCursorNavigationModel
 ::ProcessScrollGesture(double scrollAmount)
 {
+  TraceLog::ScopedContext trace(TraceLogModel::ViewContext(m_Parent, "scroll"));
+
   // Get the cross-hairs position in image space
   Vector3i xCrossImage = m_Parent->GetDriver()->GetCursorPosition();
 

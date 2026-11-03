@@ -21,6 +21,7 @@
 #include "GenericSliceModel.h"
 #include "SynchronizationModel.h"
 #include "GlobalUIModel.h"
+#include "TraceLogModel.h"
 #include "SystemInterface.h"
 #include "GlobalPreferencesModel.h"
 
@@ -290,6 +291,9 @@ usage(const char *progname)
   cout << "   --testacc factor     : Adjust the interval between test commands by factor (e.g., 0.5). " << endl;
   cout << "   --test-ipc           : Let a test communicate with other ITK-SNAP instances (off by default). " << endl;
   cout << "   --agent-listen NAME  : Listen on local socket NAME for live agent commands (JSON-RPC). " << endl;
+  cout << "   --trace-log          : Record a trace log of edits and views from the start (see Tools > Trace Log). " << endl;
+  cout << "   --trace-user ID      : Pseudonymous ID written to the trace log (default: anonymous). " << endl;
+  cout << "   --trace-dir DIR      : Keep trace logs in DIR instead of ITK-SNAP's application data folder. " << endl;
   cout << "   --css file           : Read stylesheet from file." << endl;
   cout << "   --opengl MAJOR MINOR : Set the OpenGL major and minor version. Experimental." << endl;
   cout << "   --testgl             : Diagnose OpenGL/VTK issues." << endl;
@@ -350,6 +354,11 @@ public:
 
   // Live agent command channel: QLocalServer socket name (empty = disabled)
   std::string agentListen;
+
+  // Record a trace log from the start, with this pseudonymous user ID
+  bool flagTraceLog = false;
+  std::string traceUser;
+  std::string traceDir;
 
   // Current working directory
   std::string cwd;
@@ -551,6 +560,9 @@ parse(int argc, char *argv[], CommandLineRequest &argdata)
 
   // Live agent command channel (JSON-RPC over a local socket)
   parser.AddOption("--agent-listen", 1);
+  parser.AddOption("--trace-log", 0);
+  parser.AddOption("--trace-user", 1);
+  parser.AddOption("--trace-dir", 1);
 
   // Restrict number of threads
   // TODO: use and document this
@@ -780,6 +792,12 @@ parse(int argc, char *argv[], CommandLineRequest &argdata)
 
   if (parseResult.IsOptionPresent("--agent-listen"))
     argdata.agentListen = parseResult.GetOptionParameter("--agent-listen");
+
+  argdata.flagTraceLog = parseResult.IsOptionPresent("--trace-log");
+  if (parseResult.IsOptionPresent("--trace-user"))
+    argdata.traceUser = parseResult.GetOptionParameter("--trace-user");
+  if (parseResult.IsOptionPresent("--trace-dir"))
+    argdata.traceDir = parseResult.GetOptionParameter("--trace-dir");
 
   // GUI stuff
   if (parseResult.IsOptionPresent("--style"))
@@ -1537,6 +1555,10 @@ main(int argc, char *argv[])
     // starting the event loop.
     app.setMainWindow(mainwin);
 
+    // Where trace logs go, also when recording is started from the menu
+    if (argdata.traceDir.size())
+      gui->GetTraceLogModel()->SetTraceLogDirectory(argdata.traceDir);
+
     // ------------------------------------------------------------------
     // Live agent command channel (Gate-2 prototype). Unlike --test (canned
     // JS run on a worker thread BEFORE app.exec()), this QLocalServer serves
@@ -1845,6 +1867,18 @@ main(int argc, char *argv[])
     // (potentially slow) remote downloads begin.
     QTimer::singleShot(0, mainwin, [mainwin, gui, argdata]() {
       LoadCommandLineImages(mainwin, gui, argdata);
+
+      // Record a trace log from the start, after the images given on the
+      // command line are loaded, so that they are its starting point
+      if (argdata.flagTraceLog)
+      {
+        TraceLogModel *trace = gui->GetTraceLogModel();
+        if (trace->StartRecording(argdata.traceUser.size() ? argdata.traceUser : "anonymous"))
+          std::cout << "Recording trace log to " << trace->GetFileName() << std::endl;
+        else
+          std::cerr << "Could not create a trace log in " << trace->GetTraceLogDirectory()
+                    << std::endl;
+      }
     });
 
     // TODO: remove this

@@ -150,6 +150,11 @@ public:
 
 public slots:
 
+  // Replay a trace log onto the selected segmentation without dialogs (steps
+  // < 0 for all of them); the outcome is left in the property
+  // traceLogReplayResult. For scripted use, e.g. GUI tests.
+  void ReplayTraceLogFile(QString file, int steps);
+
   void LoadRecentActionTriggered();
   void LoadRecentOverlayActionTriggered();
   void LoadRecentSegmentationActionTriggered();
@@ -177,6 +182,11 @@ public slots:
 private slots:
 
   void onActiveChanged();
+
+  // Tools > Trace Log
+  void onTraceLogStartRecording();
+  void onTraceLogStopRecording();
+  void onTraceLogReplay();
 
   // A link on the Getting Started page was clicked
   void on_brsGettingStarted_anchorClicked(const QUrl &url);
@@ -397,6 +407,14 @@ private:
 
   void UpdateRecentMenu();
   void UpdateWindowTitle();
+
+  // Tools > Trace Log, created in Initialize
+  QAction *m_ActionTraceLogStart = nullptr;
+  QAction *m_ActionTraceLogStop = nullptr;
+  QAction *m_ActionTraceLogReplay = nullptr;
+  std::string m_TraceLogErrorShown;
+  void UpdateTraceLogActions();
+  QString RunTraceLogReplay(unsigned long steps);
   void UpdateProjectMenuItems();
   void UpdateRecentProjectsMenu();
   void UpdateLayerLayoutActions();
