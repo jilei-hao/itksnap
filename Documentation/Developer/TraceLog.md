@@ -37,20 +37,27 @@ geometry, a segmentation by a checksum.
 
 ## Replaying
 
-- **GUI:** Tools > Trace Log > Replay Trace Log..., with the starting
-  segmentation loaded (a blank one, if the session started blank). ITK-SNAP
-  checks that the segmentation matches the log's starting point, asks how many
-  edits to replay, and applies each as an edit that can be undone (as far back
-  as ITK-SNAP keeps undo steps). An edit that does not fit is not applied.
+A log holds what it needs to rebuild the segmentation: the segmentation as it
+was when recording began (or when it was loaded), and every change after that.
+The image is the only other thing needed.
+
+- **GUI:** open the image, then Tools > Trace Log > Replay Trace Log.... If
+  the open segmentation has a log saved next to it, ITK-SNAP offers that log;
+  otherwise it asks for one. It asks how many edits to replay, and rebuilds the
+  segmentation in a **new layer**, leaving the open segmentations as they
+  are, so the result can be compared with the saved one. Each replayed edit
+  can be undone (as far back as ITK-SNAP keeps undo steps). An edit that does
+  not fit is not applied.
 - **Command line:**
   ```
   itksnap-wt -trace-info liver.nii.gz.trace.jsonl
-  itksnap-wt -trace-replay liver.nii.gz.trace.jsonl blank rebuilt.nii.gz
-  itksnap-wt -trace-replay liver.nii.gz.trace.jsonl start.nii.gz first10.nii.gz 10
+  itksnap-wt -trace-replay liver.nii.gz.trace.jsonl log rebuilt.nii.gz
+  itksnap-wt -trace-replay liver.nii.gz.trace.jsonl log first10.nii.gz 10
   ```
-  The start is a segmentation file or `blank`; the optional last number replays
-  only that many edits. A full replay reports whether the result is identical
-  to the saved segmentation.
+  The start is `log` (the starting segmentation the log holds), `blank`, or a
+  segmentation file; the optional last number replays only that many edits. A
+  full replay reports whether the result is identical to the saved
+  segmentation.
 
 A replay applies the edits, undos and redos of one segmentation layer: by
 default the layer saved last, which is the one the copy next to a file belongs
@@ -58,6 +65,11 @@ to. It starts from that layer's last starting point (when recording began, or
 when the layer was added, loaded or reloaded from its file). Each step stores
 the old label of every voxel it changes; a voxel with any other label stops the
 replay at that step.
+
+Logs recorded before ITK-SNAP kept the starting segmentation in them can still
+be replayed when they started blank. If they started from a segmentation with
+labels, that segmentation has to be open and selected (in the GUI), or given
+as the start (on the command line).
 
 ## Format
 
@@ -76,7 +88,7 @@ JSON Lines: one JSON object per line. Every event has:
 |------|--------|
 | `session` | `format` (`itksnap-trace`), `version` (1), `session` (random id), `user`, `app`, `started` (UTC) |
 | `image` | `loaded`; if loaded, `size`, `tps` (time points), `spacing`, `origin`, `direction` (row-major 3x3) |
-| `layer` | starting point of a segmentation layer: `layer` (id), `kind` (`present` when recording started, `added`, `loaded`), `size`, `tps`, `checksum` |
+| `layer` | starting point of a segmentation layer: `layer` (id), `kind` (`present` when recording started, `added`, `loaded`), `size`, `tps`, `checksum`, `blank`; if not blank, `content`: its labels as runs `[n, label]` over all voxels in raster order, or `content_seq`: the event that already holds the same content (since the image was loaded) |
 | `layer_removed` | `layer` |
 | `save` | `layer`, `tps`, `checksum` of what was saved |
 | `undo_cleared` | `layer`: the undo history was cleared (e.g. after a Label Editor relabel) |

@@ -38,6 +38,7 @@
 #include "SystemInterface.h"
 #include "TraceLog.h"
 #include "TraceLogReplay.h"
+#include "itksys/SystemTools.hxx"
 
 #include <algorithm>
 #include <set>
@@ -492,13 +493,24 @@ TraceLogModel::OnDisplayMappingChange()
   }
 }
 
+std::string
+TraceLogModel::FindLogOfSelectedSegmentation() const
+{
+  LabelImageWrapper *seg = m_Parent->GetDriver()->GetSelectedSegmentationLayer();
+  const char        *fn = seg ? seg->GetFileName() : nullptr;
+  if (!fn || !fn[0])
+    return std::string();
+  std::string sidecar = TraceLog::SidecarFileName(fn);
+  return itksys::SystemTools::FileExists(sidecar, true) ? sidecar : std::string();
+}
+
 unsigned long
 TraceLogModel::PrepareReplay(const std::string &file)
 {
-  IRISApplication   *driver = m_Parent->GetDriver();
-  LabelImageWrapper *seg = driver->GetSelectedSegmentationLayer();
-  if (!seg)
-    throw IRISException("Error: No segmentation. Load an image before replaying a trace log.");
+  IRISApplication *driver = m_Parent->GetDriver();
+  if (!driver->IsMainImageLoaded())
+    throw IRISException("Error: No image. Load the image the trace log was recorded on, "
+                        "then replay the log.");
 
   std::unique_ptr<TraceLogReplay> replay(new TraceLogReplay());
   replay->Read(file);
@@ -508,33 +520,74 @@ TraceLogModel::PrepareReplay(const std::string &file)
     throw IRISException("Error: Nothing to replay. The trace log does not contain a "
                         "segmentation with a starting point.");
 
-  Vector3ui size = seg->GetSize();
+  // A segmentation has the size of the main image
+  ImageWrapperBase *main = driver->GetCurrentImageData()->GetMain();
+  Vector3ui         size = main->GetSize();
   if (size[0] != base.size[0] || size[1] != base.size[1] || size[2] != base.size[2] ||
-      seg->GetNumberOfTimePoints() != base.tps)
-    throw IRISException("Error: Segmentation size does not match. The trace log was recorded "
-                        "on a %u x %u x %u segmentation with %u time point(s); the selected "
-                        "segmentation is %u x %u x %u with %u.",
+      main->GetNumberOfTimePoints() != base.tps)
+    throw IRISException("Error: Different image. The trace log was recorded on an image of "
+                        "%u x %u x %u voxels with %u time point(s); the image loaded is "
+                        "%u x %u x %u with %u.",
                         base.size[0], base.size[1], base.size[2], base.tps,
-                        size[0], size[1], size[2], seg->GetNumberOfTimePoints());
+                        size[0], size[1], size[2], main->GetNumberOfTimePoints());
 
-  if (TraceLog::ComputeChecksum(seg) != base.checksum)
-    throw IRISException("Error: Different starting segmentation. The trace log starts from "
-                        "a segmentation (%s, \"%s\") that is not the one selected. Load the "
-                        "segmentation the log started from (or a blank one, if it started "
-                        "blank) and try again.",
-                        base.checksum.c_str(), base.kind.c_str());
+  // Replay into a new layer, from the starting point the log holds. A log
+  // recorded before ITK-SNAP kept the starting segmentation in it can only be
+  // replayed onto that segmentation, which must then be the one selected.
+  m_ReplayIntoNewLayer = replay->HasStartingSegmentation();
+  if (!m_ReplayIntoNewLayer)
+  {
+    LabelImageWrapper *seg = driver->GetSelectedSegmentationLayer();
+    if (!seg || TraceLog::ComputeChecksum(seg) != base.checksum)
+      throw IRISException("Error: Starting segmentation needed. This trace log starts from a "
+                          "segmentation that already had labels when recording began, and it "
+                          "was recorded by an earlier version of ITK-SNAP, which did not keep a "
+                          "copy of it in the log. Open that segmentation, select it, and "
+                          "replay the log again.");
+  }
 
   m_Replay = std::move(replay);
   return m_Replay->GetSteps().size();
 }
 
+void
+TraceLogModel::FillStartingSegmentation(LabelImageWrapper *seg, std::set<LabelType> &labels)
+{
+  // The content runs cover all voxels in raster order, one time point after
+  // another; the new layer is blank, so only labels other than 0 are written
+  IRISApplication *driver = m_Parent->GetDriver();
+  const auto      &content = m_Replay->GetBase().content;
+  size_t           run = 0;
+  unsigned long    used = 0;
+  for (unsigned int t = 0; t < seg->GetNumberOfTimePoints(); t++)
+  {
+    if (seg->GetNumberOfTimePoints() > 1)
+      driver->SetCursorTimePoint(t);
+
+    SegmentationUpdateIterator it(seg, seg->GetBufferedRegion(), 0, DrawOverFilter());
+    for (; !it.IsAtEnd() && run < content.size(); ++it)
+    {
+      if (content[run].second != 0)
+      {
+        it.ReplaceLabel(0, content[run].second);
+        labels.insert(content[run].second);
+      }
+      if (++used == content[run].first)
+      {
+        ++run;
+        used = 0;
+      }
+    }
+    it.Finalize("Replay: starting segmentation");
+  }
+}
+
 TraceLogModel::ReplayResult
 TraceLogModel::Replay(unsigned long n_steps)
 {
-  ReplayResult       result;
-  IRISApplication   *driver = m_Parent->GetDriver();
-  LabelImageWrapper *seg = driver->GetSelectedSegmentationLayer();
-  if (!m_Replay || !seg)
+  ReplayResult     result;
+  IRISApplication *driver = m_Parent->GetDriver();
+  if (!m_Replay || !driver->GetSelectedSegmentationLayer())
     return result;
 
   const std::vector<TraceLogReplay::Step> &steps = m_Replay->GetSteps();
@@ -549,6 +602,17 @@ TraceLogModel::Replay(unsigned long n_steps)
 
   unsigned int        tp_start = driver->GetCursorTimePoint();
   std::set<LabelType> labels;
+
+  // A new layer, starting from the segmentation the log holds; the
+  // segmentation that was open is left as it is
+  if (m_ReplayIntoNewLayer)
+  {
+    driver->AddBlankSegmentation();
+    result.new_layer = true;
+  }
+  LabelImageWrapper *seg = driver->GetSelectedSegmentationLayer();
+  if (m_ReplayIntoNewLayer && !m_Replay->GetBase().content.empty())
+    this->FillStartingSegmentation(seg, labels);
   for (unsigned long i = 0; i < n_steps; i++)
   {
     const TraceLogReplay::Step &s = steps[i];

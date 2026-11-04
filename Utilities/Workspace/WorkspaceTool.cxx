@@ -144,9 +144,10 @@ int usage(int rc)
   cout << "  -trace-info <log>                 : Describe a trace log: session, events, and what a replay" << endl;
   cout << "                                      would rebuild" << endl;
   cout << "  -trace-replay <log> <start> <out> [n]" << endl;
-  cout << "                                    : Rebuild the segmentation the log was saved with, starting" << endl;
-  cout << "                                      from segmentation <start> (or 'blank'), and write it to" << endl;
-  cout << "                                      <out>. With n, apply only the first n edits." << endl;
+  cout << "                                    : Rebuild the segmentation the log was saved with and write" << endl;
+  cout << "                                      it to <out>. <start> is 'log' (the starting segmentation" << endl;
+  cout << "                                      stored in the log), 'blank', or the file it started from." << endl;
+  cout << "                                      With n, apply only the first n edits." << endl;
   cout << "Annotation object commands" << endl;
   cout << "  -annot-list                       : List all annotations in the workspace" << endl;
   cout << "Distributed segmentation server (DSS) user commands: " << endl;
@@ -418,6 +419,14 @@ void ReplayTraceLog(const string &file, const string &start, const string &out,
     {
     seg = replay.CreateBlankSegmentation();
     }
+  else if(start == "log")
+    {
+    if(!replay.HasStartingSegmentation())
+      throw IRISException("The trace log does not hold the segmentation it starts from (it was "
+                          "recorded by an earlier version of ITK-SNAP). Give the file of that "
+                          "segmentation instead of 'log'.");
+    seg = replay.CreateStartingSegmentation();
+    }
   else
     {
     typedef itk::ImageFileReader<LabelImage4D> ReaderType;
@@ -438,8 +447,10 @@ void ReplayTraceLog(const string &file, const string &start, const string &out,
   std::string checksum = TraceLogReplay::ComputeChecksum(seg);
   if(checksum != base.checksum)
     throw IRISException("The starting segmentation (%s) is not the one the trace log starts "
-                        "from (%s, %s).", checksum.c_str(), base.checksum.c_str(),
-                        base.kind.c_str());
+                        "from (%s, %s).%s", checksum.c_str(), base.checksum.c_str(),
+                        base.kind.c_str(),
+                        replay.HasStartingSegmentation()
+                          ? " Use 'log' to start from the one stored in the log." : "");
 
   const std::vector<TraceLogReplay::Step> &steps = replay.GetSteps();
   size_t n = (max_steps >= 0 && (size_t) max_steps < steps.size()) ? (size_t) max_steps : steps.size();

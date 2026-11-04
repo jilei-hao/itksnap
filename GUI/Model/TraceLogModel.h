@@ -28,9 +28,11 @@
 
 #include <map>
 #include <memory>
+#include <set>
 
 class GlobalUIModel;
 class GenericSliceModel;
+class LabelImageWrapper;
 class TraceLogReplay;
 
 /**
@@ -94,18 +96,32 @@ public:
 
     // Whether the full replay was compared with the saved segmentation
     bool compared = false, final_matches = false;
+
+    // Whether the replay went into a new segmentation layer
+    bool new_layer = false;
   };
 
   /**
-   * Read a trace log for replay onto the selected segmentation, and check
-   * that the segmentation is the log's starting point. Returns the number of
-   * steps. Throws IRISException if the log cannot be read or does not fit.
+   * The trace log saved next to the file of the selected segmentation, if
+   * there is one, or an empty string
+   */
+  std::string FindLogOfSelectedSegmentation() const;
+
+  /**
+   * Read a trace log for replay, and check that it was recorded on an image of
+   * the size of the one loaded. Returns the number of steps. Throws
+   * IRISException if the log cannot be read or does not fit.
    */
   unsigned long PrepareReplay(const std::string &file);
 
   /**
-   * Replay the first n steps of the prepared log. Each step is applied as an
-   * edit that can be undone. Stops at a step that does not apply exactly.
+   * Replay the first n steps of the prepared log. The replay goes into a new
+   * segmentation layer, which starts as the segmentation the log started
+   * from; the open segmentations are left alone. (A log recorded before
+   * ITK-SNAP kept that starting segmentation is replayed onto the selected
+   * segmentation, which PrepareReplay checks is the starting point.) Each step
+   * is an edit that can be undone. Stops at a step that does not apply
+   * exactly.
    */
   ReplayResult Replay(unsigned long n_steps);
 
@@ -147,6 +163,10 @@ protected:
   // its state is taken again once they are (see OnViewGeometryChange)
   bool m_CursorNotReady = false;
   std::unique_ptr<TraceLogReplay> m_Replay;
+  bool m_ReplayIntoNewLayer = false;
+
+  // Write the starting segmentation the log holds into a new, blank layer
+  void FillStartingSegmentation(LabelImageWrapper *seg, std::set<LabelType> &labels);
 };
 
 #endif // TRACELOGMODEL_H

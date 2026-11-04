@@ -1579,6 +1579,15 @@ set_tests_properties(TraceLogReplayCLIFromFile PROPERTIES
   FIXTURES_REQUIRED TraceLogData
   PASS_REGULAR_EXPRESSION "identical to the saved segmentation.*Replayed 2 of 8 edits")
 
+# Replay from the starting segmentation the log holds
+add_test(NAME TraceLogReplayCLIFromLog
+  COMMAND itksnap-wt
+    -trace-replay "${TEMP}/TraceLogTest/seg2.nii.gz.trace.jsonl" log
+                  "${TEMP}/TraceLogTest/seg2_from_log.nii.gz")
+set_tests_properties(TraceLogReplayCLIFromLog PROPERTIES
+  FIXTURES_REQUIRED TraceLogData
+  PASS_REGULAR_EXPRESSION "identical to the saved segmentation")
+
 # A replay from a segmentation that is not the log's starting point fails
 add_test(NAME TraceLogReplayCLIWrongStart
   COMMAND itksnap-wt
@@ -1586,7 +1595,7 @@ add_test(NAME TraceLogReplayCLIWrongStart
                   "${TEMP}/TraceLogTest/wrong.nii.gz")
 set_tests_properties(TraceLogReplayCLIWrongStart PROPERTIES
   FIXTURES_REQUIRED TraceLogData
-  PASS_REGULAR_EXPRESSION "is not the one the trace log starts from")
+  PASS_REGULAR_EXPRESSION "is not the one the trace log starts from.*Use 'log'")
 
 
 # Needs the same manifest as the main executable to get the UTF-8 process code page

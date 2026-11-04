@@ -181,6 +181,7 @@ TraceLog::Start(const std::string &dir, const std::string &user, const std::stri
   m_LastState.clear();
   m_Context.clear();
   m_KnownLayers.clear();
+  m_ContentSeq.clear();
   s_Active = this;
 
   Json::Value f(Json::objectValue);
@@ -604,6 +605,10 @@ TraceLog::LogLayer(LabelImageWrapper *seg, const char *kind)
   if (!this->IsRecording() || !seg)
     return;
 
+  std::string checksum, content;
+  bool        blank = false;
+  EncodeLayer(seg, checksum, content, blank);
+
   Json::Value ev(Json::objectValue), size(Json::arrayValue);
   Vector3ui   sz = seg->GetSize();
   for (unsigned int d = 0; d < 3; d++)
@@ -612,10 +617,72 @@ TraceLog::LogLayer(LabelImageWrapper *seg, const char *kind)
   ev["kind"] = kind;
   ev["size"] = size;
   ev["tps"] = seg->GetNumberOfTimePoints();
-  ev["checksum"] = ComputeChecksum(seg);
+  ev["checksum"] = checksum;
+  ev["blank"] = blank;
 
   m_KnownLayers.insert(seg->GetUniqueId());
-  this->LogLocked("layer", ev);
+  auto written = m_ContentSeq.find(checksum);
+  if (blank)
+  {
+    this->LogLocked("layer", ev);
+  }
+  else if (written != m_ContentSeq.end())
+  {
+    ev["content_seq"] = (Json::UInt64)written->second;
+    this->LogLocked("layer", ev);
+  }
+  else
+  {
+    this->LogLocked("layer", ev, "content", &content);
+    m_ContentSeq[checksum] = m_NumberOfEvents;
+  }
+}
+
+void
+TraceLog::EncodeLayer(LabelImageWrapper *seg, std::string &checksum, std::string &content,
+                      bool &blank)
+{
+  // Runs of one label continue across rows and time points, so a blank
+  // segmentation is the single run [n, 0]
+  ChecksumHasher hasher;
+  content = "[";
+  unsigned long run_length = 0, n_runs = 0;
+  LabelType     run_label = 0;
+  auto flush = [&]() {
+    if (run_length == 0)
+      return;
+    char buf[48];
+    int  len = snprintf(buf, sizeof(buf), "%s[%lu,%u]", n_runs ? "," : "", run_length,
+                       (unsigned int)run_label);
+    content.append(buf, len);
+    ++n_runs;
+    run_length = 0;
+  };
+
+  typedef LabelImage::BufferType BufferType;
+  for (unsigned int t = 0; t < seg->GetNumberOfTimePoints(); t++)
+  {
+    const BufferType *buffer = seg->GetImageByTimePoint(t)->GetBuffer();
+    for (itk::ImageRegionConstIterator<BufferType> it(buffer, buffer->GetBufferedRegion());
+         !it.IsAtEnd(); ++it)
+    {
+      for (const auto &segment : it.Get())
+      {
+        hasher.Add(segment.second, (std::uint32_t)segment.first);
+        if (run_length > 0 && segment.second != run_label)
+          flush();
+        run_label = segment.second;
+        run_length += segment.first;
+      }
+      hasher.EndRow();
+    }
+  }
+  bool single_zero_run = (n_runs == 0 && run_label == 0);
+  flush();
+  content += "]";
+
+  checksum = FormatChecksum(hasher.GetHash());
+  blank = single_zero_run;
 }
 
 void
@@ -688,6 +755,7 @@ TraceLog::LogMainImage(ImageWrapperBase *main)
   std::lock_guard<std::recursive_mutex> lock(m_Mutex);
   this->LogLocked("image", ev);
   m_KnownLayers.clear();
+  m_ContentSeq.clear();
 }
 
 bool

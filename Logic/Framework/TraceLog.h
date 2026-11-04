@@ -177,8 +177,24 @@ public:
                              const LabelImage *image, const DeltaList &deltas, int sign,
                              const std::string &op, const SegmentationAuditRecord *audit);
 
-  /** Record the content of a segmentation layer: kind is "present", "added" or "loaded" */
+  /**
+   * Record the starting point of a segmentation layer: kind is "present",
+   * "added" or "loaded". The event has the layer's checksum and whether it is
+   * blank; a layer that is not blank also gets its labels, as "content": runs
+   * [n, label] over all its voxels in raster order (x fastest, then y, z and
+   * time point). So a replay can start from the log alone, without the file
+   * the layer was loaded from. Loading a segmentation can report the same
+   * layer several times; content written before (since the current main
+   * image was loaded) is referred to by its event, as "content_seq".
+   */
   void LogLayer(LabelImageWrapper *seg, const char *kind);
+
+  /**
+   * The checksum of a segmentation, its content as JSON text (see LogLayer)
+   * and whether it is blank, in one pass
+   */
+  static void EncodeLayer(LabelImageWrapper *seg, std::string &checksum, std::string &content,
+                          bool &blank);
 
   /**
    * Bring the set of known segmentation layers up to date: layers not seen
@@ -327,6 +343,10 @@ protected:
 
   // Segmentation layers that have a "layer" event
   std::set<unsigned long> m_KnownLayers;
+
+  // The event that holds the content with a given checksum, since the current
+  // main image was loaded (see LogLayer)
+  std::map<std::string, unsigned long> m_ContentSeq;
 
   mutable std::recursive_mutex m_Mutex;
 };

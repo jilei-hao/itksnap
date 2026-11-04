@@ -150,9 +150,9 @@ public:
 
 public slots:
 
-  // Replay a trace log onto the selected segmentation without dialogs (steps
-  // < 0 for all of them); the outcome is left in the property
-  // traceLogReplayResult. For scripted use, e.g. GUI tests.
+  // Replay a trace log without dialogs (an empty file: the log saved with the
+  // selected segmentation; steps < 0: all of them); the outcome is left in the
+  // property traceLogReplayResult. For scripted use, e.g. GUI tests.
   void ReplayTraceLogFile(QString file, int steps);
 
   void LoadRecentActionTriggered();

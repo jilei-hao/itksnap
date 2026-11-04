@@ -31,10 +31,12 @@
 namespace
 {
 
-// Parse the runs of a step, written as [[n],[n,old,new],...] (see TraceLog).
-// Faster and much smaller than a JSON tree for steps with millions of runs.
-// Returns false if the text is not in that form.
-bool ParseRuns(const char *p, const char *end, std::vector<TraceLogReplay::Run> &runs)
+// Parse the runs of a step ([[n],[n,old,new],...]) or the content of a layer
+// ([[n,label],...]), as TraceLog writes them, calling add(v, k) for each
+// tuple of k numbers. Faster and much smaller than a JSON tree for millions
+// of runs. Returns false if the text is not in that form, or add refuses.
+template <class TAdd>
+bool ParseTuples(const char *p, const char *end, TAdd add)
 {
   auto skip = [&]() { while (p < end && (*p == ' ' || *p == '\t')) ++p; };
   auto number = [&](unsigned long long &v) -> bool {
@@ -68,18 +70,8 @@ bool ParseRuns(const char *p, const char *end, std::vector<TraceLogReplay::Run> 
     while (expect(','))
       if (k == 3 || !number(v[k++]))
         return false;
-    if (!expect(']') || k == 2)
+    if (!expect(']') || !add(v, k))
       return false;
-
-    TraceLogReplay::Run run;
-    run.length = (unsigned long)v[0];
-    if (k == 3)
-    {
-      run.changed = true;
-      run.old_label = (LabelType)v[1];
-      run.new_label = (LabelType)v[2];
-    }
-    runs.push_back(run);
   } while (expect(','));
   if (!expect(']'))
     return false;
@@ -103,6 +95,9 @@ TraceLogReplay::Read(const std::string &file)
   Json::Reader  reader;
   std::string   line;
   unsigned long line_no = 0;
+
+  // Layer content by the event that holds it (see TraceLog::LogLayer)
+  std::map<unsigned long, std::vector<std::pair<unsigned long, LabelType>>> contents_by_seq;
   while (std::getline(in, line))
   {
     ++line_no;
@@ -111,24 +106,53 @@ TraceLogReplay::Read(const std::string &file)
     if (line.empty())
       continue;
 
-    // TraceLog writes the runs of a step last; read them separately from the
-    // rest of the event when they are
-    static const std::string runs_key = ",\"runs\":";
-    std::vector<Run> runs;
-    bool             have_runs = false;
-    size_t           pos = line.rfind(runs_key);
+    // TraceLog writes the runs of a step, or the content of a layer, last;
+    // read them separately from the rest of the event when they are
+    static const std::string runs_key = ",\"runs\":", content_key = ",\"content\":";
+    std::vector<Run>                               runs;
+    std::vector<std::pair<unsigned long, LabelType>> content;
+    bool   have_runs = false, have_content = false;
+    size_t pos = line.rfind(runs_key), key_size = runs_key.size();
+    size_t cpos = line.rfind(content_key);
+    bool   is_content = cpos != std::string::npos && (pos == std::string::npos || cpos > pos);
+    if (is_content)
+    {
+      pos = cpos;
+      key_size = content_key.size();
+    }
     if (pos != std::string::npos && line.back() == '}')
     {
-      const char *begin = line.data() + pos + runs_key.size();
-      if (ParseRuns(begin, line.data() + line.size() - 1, runs))
+      const char *begin = line.data() + pos + key_size, *end = line.data() + line.size() - 1;
+      bool        ok;
+      if (is_content)
+        ok = ParseTuples(begin, end, [&](const unsigned long long *v, int k) {
+          content.push_back(std::make_pair((unsigned long)v[0], (LabelType)v[1]));
+          return k == 2;
+        });
+      else
+        ok = ParseTuples(begin, end, [&](const unsigned long long *v, int k) {
+          Run run;
+          run.length = (unsigned long)v[0];
+          if (k == 3)
+          {
+            run.changed = true;
+            run.old_label = (LabelType)v[1];
+            run.new_label = (LabelType)v[2];
+          }
+          runs.push_back(run);
+          return k != 2;
+        });
+
+      if (ok)
       {
         line.resize(pos);
         line += '}';
-        have_runs = true;
+        (is_content ? have_content : have_runs) = true;
       }
       else
       {
         runs.clear();
+        content.clear();
       }
     }
 
@@ -176,6 +200,41 @@ TraceLogReplay::Read(const std::string &file)
       ls.tps = ev["tps"].asUInt();
       for (unsigned int d = 0; d < 3; d++)
         ls.size[d] = ev["size"][d].asUInt();
+
+      // Logs from before "blank" was recorded: a blank layer has the checksum
+      // of a blank segmentation of its size
+      ls.blank = ev.isMember("blank") ? ev["blank"].asBool()
+                                      : ls.checksum == BlankChecksum(ls.size, ls.tps);
+      if (have_content)
+      {
+        ls.content.swap(content);
+        contents_by_seq[seq] = ls.content;
+      }
+      else if (ev.isMember("content_seq"))
+      {
+        auto it = contents_by_seq.find((unsigned long)ev["content_seq"].asUInt64());
+        if (it == contents_by_seq.end())
+          throw IRISException("Error: Invalid trace log. Event %lu refers to the content of "
+                              "event %lu, which is not in the log.",
+                              seq, (unsigned long)ev["content_seq"].asUInt64());
+        ls.content = it->second;
+      }
+      else
+      {
+        const Json::Value &jc = ev["content"];
+        for (Json::ArrayIndex i = 0; i < jc.size(); i++)
+          ls.content.push_back(
+            std::make_pair((unsigned long)jc[i][0].asUInt64(), (LabelType)jc[i][1].asUInt()));
+      }
+
+      unsigned long long total = 0, expected = (unsigned long long)ls.size[0] * ls.size[1] *
+                                                 ls.size[2] * std::max(1u, ls.tps);
+      for (const auto &run : ls.content)
+        total += run.first;
+      if (!ls.content.empty() && total != expected)
+        throw IRISException("Error: Invalid trace log. The content of layer %lu in event %lu "
+                            "covers %llu voxels, but the layer has %llu.",
+                            layer, seq, total, expected);
       m_LayerStates[layer].push_back(ls);
     }
     else if (type == "save")
@@ -340,6 +399,35 @@ TraceLogReplay::ComputeChecksum(const LabelImage4D *image)
   TraceLog::ChecksumHasher hasher;
   TraceLog::AddToChecksum(hasher, image);
   return TraceLog::FormatChecksum(hasher.GetHash());
+}
+
+std::string
+TraceLogReplay::BlankChecksum(const unsigned int size[3], unsigned int tps)
+{
+  TraceLog::ChecksumHasher hasher;
+  unsigned long            rows = (unsigned long)size[1] * size[2] * std::max(1u, tps);
+  for (unsigned long r = 0; r < rows; r++)
+  {
+    hasher.Add(0, size[0]);
+    hasher.EndRow();
+  }
+  return TraceLog::FormatChecksum(hasher.GetHash());
+}
+
+TraceLogReplay::LabelImage4D::Pointer
+TraceLogReplay::CreateStartingSegmentation() const
+{
+  // The content runs cover the voxels in raster order, as the buffer of a 4D
+  // image holds them
+  LabelImage4D::Pointer image = this->CreateBlankSegmentation();
+  LabelType            *buffer = image->GetBufferPointer();
+  size_t                i = 0;
+  for (const auto &run : m_Base.content)
+  {
+    std::fill(buffer + i, buffer + i + run.first, run.second);
+    i += run.first;
+  }
+  return image;
 }
 
 TraceLogReplay::LabelImage4D::Pointer

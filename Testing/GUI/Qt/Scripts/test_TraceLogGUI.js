@@ -2,10 +2,12 @@
 include("Library");
 
 // Records a trace log through the GUI. ITK-SNAP is started with --trace-log
-// (see CMakeLists.txt). The test changes slices with the keyboard and the
+// (see CMakeLists.txt), and starts from a segmentation with labels. The test
+// changes slices with the keyboard and the
 // slider, zooms and pans with the mouse, paints two strokes, undoes one and
-// saves the segmentation. It then replays the saved log into a new, blank
-// segmentation and checks the result is the same. TraceLogGUICheck then reads
+// saves the segmentation. It then replays the log saved with it, which builds
+// a new layer from the segmentation the session started from, and checks the
+// result is the same. TraceLogGUICheck then reads
 // the log and checks that all of it was recorded with the view it happened in,
 // and that replaying the log rebuilds the saved segmentation.
 
@@ -16,6 +18,9 @@ engine.print("Title: " + title);
 engine.validateValue(title.indexOf("[Recording trace]") >= 0, true);
 
 openMainImage("MRIcrop-orig.gipl.gz");
+
+//=== Start from a segmentation with labels: the log keeps a copy of it
+openSegmentation("MRIcrop-seg.gipl.gz");
 
 //=== Show just the axial view
 engine.clickChild(mainwin, "btnAxial");
@@ -89,8 +94,9 @@ var n_painted = countVoxels("Label 1");
 engine.print("Painted voxels: " + n_painted);
 engine.validateValue(n_painted > 0, true);
 
-//=== Save the segmentation: the log is copied next to it
-engine.trigger("actionSaveSegmentation");
+//=== Save the segmentation under a new name (Save As, so that the test data
+//=== it was loaded from is never overwritten): the log is copied next to it
+engine.trigger("actionSaveSegmentationAs");
 engine.sleep(2000);
 var dialog = engine.findChild(mainwin, "wizImageIO");
 var out_file = tempdir + "/TraceLogGUI_seg_" + Date.now() + ".nii.gz";
@@ -100,13 +106,12 @@ engine.clickChild(dialog, "qt_wizard_finish");
 engine.sleep(2000);
 engine.print("Saved " + out_file);
 
-//=== Replay the saved log into a new, blank segmentation: same result
-engine.trigger("actionAddSegmentation_New");
-engine.sleep(1000);
-engine.validateValue(countVoxels("Label 1"), 0);
-engine.callMethod(mainwin, "ReplayTraceLogFile", [out_file + ".trace.jsonl", -1]);
-engine.sleep(2000);
+//=== Replay the log saved with the open segmentation, as Tools > Trace Log >
+//=== Replay offers it: it is rebuilt in a new layer, the same as saved
+engine.callMethod(mainwin, "ReplayTraceLogFile", ["", -1]);
+engine.sleep(3000);
 var result = String(engine.getProperty(mainwin, "traceLogReplayResult"));
 engine.print("Replay: " + result);
 engine.validateValue(result.indexOf("identical") >= 0, true);
+engine.validateValue(result.indexOf("new segmentation layer") >= 0, true);
 engine.validateValue(countVoxels("Label 1"), n_painted);

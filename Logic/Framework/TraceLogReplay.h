@@ -76,6 +76,11 @@ public:
     std::string   kind, checksum;
     unsigned int  size[3] = { 0, 0, 0 };
     unsigned int  tps = 0;
+
+    // Whether the layer was blank, and if not, its labels as runs over all its
+    // voxels in raster order (empty in logs recorded before ITK-SNAP stored them)
+    bool                                             blank = false;
+    std::vector<std::pair<unsigned long, LabelType>> content;
   };
 
   /** Read a trace log. Throws IRISException if it is not a valid trace log. */
@@ -126,6 +131,19 @@ public:
 
   /** A blank segmentation with the size and geometry recorded in the log */
   LabelImage4D::Pointer CreateBlankSegmentation() const;
+
+  /**
+   * Whether the log holds the target layer's starting point itself: it was
+   * blank, or its labels are in the log. If not, a replay needs the
+   * segmentation file the layer started from.
+   */
+  bool HasStartingSegmentation() const { return m_Base.blank || !m_Base.content.empty(); }
+
+  /** The target layer's starting point, from the log (see HasStartingSegmentation) */
+  LabelImage4D::Pointer CreateStartingSegmentation() const;
+
+  /** Checksum of a blank segmentation of the given size */
+  static std::string BlankChecksum(const unsigned int size[3], unsigned int tps);
 
 protected:
   void Select();

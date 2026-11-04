@@ -43,8 +43,10 @@
 #include "itksys/Directory.hxx"
 #include "itksys/SystemTools.hxx"
 
+#include <cstring>
 #include <fstream>
 #include <iostream>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -264,9 +266,11 @@ int CheckGuiLog(const std::string &dir)
   TraceLogReplay replay;
   replay.Read(file);
   CHECK(replay.GetSteps().size() == 3, "two strokes and an undo to replay");
-  TraceLogReplay::LabelImage4D::Pointer seg = replay.CreateBlankSegmentation();
+  CHECK(replay.GetBase().kind == "loaded" && !replay.GetBase().blank,
+        "the GUI session started from a loaded segmentation with labels");
+  TraceLogReplay::LabelImage4D::Pointer seg = replay.CreateStartingSegmentation();
   CHECK(TraceLogReplay::ComputeChecksum(seg) == replay.GetBase().checksum,
-        "the GUI session started from a blank segmentation");
+        "the log holds that segmentation");
   for (const TraceLogReplay::Step &s : replay.GetSteps())
     CHECK(TraceLogReplay::ApplyStep(seg, s) == 0, "each step applies exactly");
   CHECK(!replay.GetFinalChecksum().empty() &&
@@ -385,6 +389,8 @@ int main(int argc, char *argv[])
   CHECK(replay.GetBase().kind == "present", "the layer starts as it was when recording began");
   CHECK(replay.GetSteps().size() == 8, "5 edits, 2 undos and 1 redo");
   CHECK(replay.GetFinalChecksum() == saved_checksum, "the log has the saved checksum");
+  CHECK(replay.GetBase().blank && replay.HasStartingSegmentation(),
+        "a blank start can be replayed from the log alone");
 
   TraceLogReplay::LabelImage4D::Pointer rebuilt = replay.CreateBlankSegmentation();
   CHECK(TraceLogReplay::ComputeChecksum(rebuilt) == replay.GetBase().checksum,
@@ -428,6 +434,55 @@ int main(int argc, char *argv[])
   replay2.Read(TraceLog::SidecarFileName(segfile2));
   CHECK(replay2.GetBase().kind == "loaded", "the second log starts from the loaded file");
   CHECK(replay2.GetBase().checksum == saved_checksum, "...whose checksum is the first save's");
+  CHECK(!replay2.GetBase().blank && !replay2.GetBase().content.empty(),
+        "the log keeps a copy of a loaded segmentation with labels");
+  TraceLogReplay::LabelImage4D::Pointer from_log = replay2.CreateStartingSegmentation();
+  CHECK(TraceLogReplay::ComputeChecksum(from_log) == saved_checksum,
+        "the copy in the log is the loaded segmentation");
+  CHECK(TraceLogReplay::ApplyStep(from_log, replay2.GetSteps()[0]) == 0 &&
+          TraceLogReplay::ComputeChecksum(from_log) == saved_checksum2,
+        "replaying from the copy in the log reproduces the save");
+
+  // A log from before the starting segmentation and "blank" were recorded:
+  // a blank start is still recognized; one with labels needs its file
+  {
+    std::string text2, old_style;
+    ReadEvents(TraceLog::SidecarFileName(segfile2), text2);
+    std::istringstream lines(text2);
+    std::string        line;
+    while (std::getline(lines, line))
+    {
+      size_t c = line.find(",\"content\":");
+      if (c != std::string::npos)
+        line = line.substr(0, c) + "}";
+      line = std::regex_replace(line, std::regex("\"content_seq\":[0-9]+,"), "");
+      for (const char *b : { "\"blank\":true,", "\"blank\":false," })
+        for (size_t p; (p = line.find(b)) != std::string::npos;)
+          line.erase(p, strlen(b));
+      old_style += line + "\n";
+    }
+    std::string old_file = work + "/old_style.jsonl";
+    std::ofstream(old_file.c_str()) << old_style;
+    TraceLogReplay old_replay;
+    old_replay.Read(old_file);
+    CHECK(!old_replay.HasStartingSegmentation(), "an old log does not hold a start with labels");
+
+    std::string text1, old_style1;
+    ReadEvents(sidecar, text1);
+    std::istringstream lines1(text1);
+    while (std::getline(lines1, line))
+    {
+      for (const char *b : { "\"blank\":true,", "\"blank\":false," })
+        for (size_t p; (p = line.find(b)) != std::string::npos;)
+          line.erase(p, strlen(b));
+      old_style1 += line + "\n";
+    }
+    std::string old_file1 = work + "/old_style_blank.jsonl";
+    std::ofstream(old_file1.c_str()) << old_style1;
+    TraceLogReplay old_replay1;
+    old_replay1.Read(old_file1);
+    CHECK(old_replay1.GetBase().blank, "an old log's blank start is recognized by its checksum");
+  }
   CHECK(replay2.GetSteps().size() == 1, "one edit after loading");
   TraceLogReplay::LabelImage4D::Pointer from_file = ReadSegmentation(segfile);
   CHECK(TraceLogReplay::ApplyStep(from_file, replay2.GetSteps()[0]) == 0, "it applies");

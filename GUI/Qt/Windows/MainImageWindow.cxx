@@ -1201,12 +1201,36 @@ void MainImageWindow::onTraceLogStopRecording()
 
 void MainImageWindow::onTraceLogReplay()
 {
-  QString file = QFileDialog::getOpenFileName(
-    this, tr("Replay Trace Log"), QString(), tr("Trace logs (*.jsonl);;All files (*)"));
+  TraceLogModel *trace = m_Model->GetTraceLogModel();
+
+  // The log saved next to the open segmentation is the one usually wanted
+  QString file;
+  QString sidecar = from_utf8(trace->FindLogOfSelectedSegmentation());
+  if(sidecar.size())
+    {
+    QString seg_name = QFileInfo(sidecar).completeBaseName();
+    seg_name.chop(QString(".trace").size());
+    QMessageBox box(QMessageBox::Question, tr("Replay Trace Log"),
+                    tr("Replay the trace log saved with %1?").arg(seg_name),
+                    QMessageBox::Cancel, this);
+    box.setInformativeText(tr("The replay rebuilds the segmentation in a new layer and "
+                              "leaves %1 as it is.").arg(seg_name));
+    QPushButton *replay = box.addButton(tr("Replay"), QMessageBox::AcceptRole);
+    QPushButton *other = box.addButton(tr("Choose Another Log..."), QMessageBox::ActionRole);
+    box.setDefaultButton(replay);
+    box.exec();
+    if(box.clickedButton() == replay)
+      file = sidecar;
+    else if(box.clickedButton() != other)
+      return;
+    }
+
+  if(file.isEmpty())
+    file = QFileDialog::getOpenFileName(
+      this, tr("Replay Trace Log"), QString(), tr("Trace logs (*.jsonl);;All files (*)"));
   if(file.isEmpty())
     return;
 
-  TraceLogModel *trace = m_Model->GetTraceLogModel();
   unsigned long  n = 0;
   try
     {
@@ -1260,6 +1284,9 @@ QString MainImageWindow::RunTraceLogReplay(unsigned long steps)
   else
     msg = tr("Replayed %1 of %2 edits.").arg(r.applied_steps).arg(r.total_steps);
 
+  if(r.new_layer)
+    msg += " " + tr("The result is in a new segmentation layer; the segmentation that was "
+                    "open is unchanged.");
   return msg + " " + tr("The replayed edits can be undone, as far back as ITK-SNAP keeps "
                         "undo steps.");
 }
@@ -1269,6 +1296,8 @@ void MainImageWindow::ReplayTraceLogFile(QString file, int steps)
   // Like Tools > Trace Log > Replay, without the dialogs. The outcome is left
   // in the property traceLogReplayResult.
   QString msg;
+  if(file.isEmpty())
+    file = from_utf8(m_Model->GetTraceLogModel()->FindLogOfSelectedSegmentation());
   try
     {
     unsigned long n = m_Model->GetTraceLogModel()->PrepareReplay(to_utf8(file));
