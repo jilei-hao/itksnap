@@ -96,14 +96,34 @@ engine.validateValue(n_painted > 0, true);
 
 //=== Save the segmentation under a new name (Save As, so that the test data
 //=== it was loaded from is never overwritten): the log is copied next to it
+// Wait for each step of the wizard rather than a fixed time: Finish is
+// enabled only once the wizard has checked the file name, and a click before
+// that is ignored, leaving the segmentation unsaved
+function waitFor(what, test)
+{
+    for (var i = 0; i < 40 && !test(); i++)
+        engine.sleep(250);
+    engine.print("Waited for " + what + ": " + test());
+    engine.validateValue(test(), true);
+}
+
 engine.trigger("actionSaveSegmentationAs");
-engine.sleep(2000);
-var dialog = engine.findChild(mainwin, "wizImageIO");
+var dialog = null;
+waitFor("the save wizard", function() {
+    dialog = engine.findVisibleChild(mainwin, "wizImageIO");
+    return dialog !== null && dialog !== undefined;
+});
 var out_file = tempdir + "/TraceLogGUI_seg_" + Date.now() + ".nii.gz";
 engine.setChildProperty(dialog, "inFilename", "text", out_file);
-engine.sleep(500);
+waitFor("Finish", function() {
+    return engine.getChildProperty(dialog, "qt_wizard_finish", "enabled") == true;
+});
 engine.clickChild(dialog, "qt_wizard_finish");
-engine.sleep(2000);
+waitFor("the wizard to close", function() {
+    var d = engine.findVisibleChild(mainwin, "wizImageIO");
+    return d === null || d === undefined;
+});
+engine.sleep(1000);
 engine.print("Saved " + out_file);
 
 //=== Replay the log saved with the open segmentation, as Tools > Trace Log >
@@ -114,4 +134,13 @@ var result = String(engine.getProperty(mainwin, "traceLogReplayResult"));
 engine.print("Replay: " + result);
 engine.validateValue(result.indexOf("identical") >= 0, true);
 engine.validateValue(result.indexOf("new segmentation layer") >= 0, true);
-engine.validateValue(countVoxels("Label 1"), n_painted);
+// The statistics table is occasionally read before it has caught up with the
+// new layer, so read it again before calling a difference a failure
+var n_replayed = countVoxels("Label 1");
+for (var attempt = 2; attempt <= 3 && n_replayed != n_painted; attempt++)
+{
+    engine.print("Voxels in the replayed layer: " + n_replayed + "; reading again");
+    engine.sleep(1000);
+    n_replayed = countVoxels("Label 1");
+}
+engine.validateValue(n_replayed, n_painted);
