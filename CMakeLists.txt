@@ -2018,6 +2018,15 @@ TARGET_INCLUDE_DIRECTORIES(FreeRotation3DTest PUBLIC ${SNAP_INCLUDE_DIRS})
 
 add_test(NAME FreeRotation3D COMMAND FreeRotation3DTest ${TEMP})
 
+# Test: a trace log records free rotation, and what it does to the cursor and
+# the views, and a segmentation painted while rotated replays exactly
+ADD_EXECUTABLE(TraceLogRotationTest
+    Testing/GUI/Model/TraceLogRotationTest.cxx)
+TARGET_LINK_LIBRARIES(TraceLogRotationTest ${SNAP_EXTERNAL_LIBS} itksnapui_model itksnaplogic)
+TARGET_INCLUDE_DIRECTORIES(TraceLogRotationTest PUBLIC ${SNAP_INCLUDE_DIRS})
+
+add_test(NAME TraceLogRotation COMMAND TraceLogRotationTest ${TEMP})
+
 # SSH tunnel test
 SET(SSH_TUNNEL_TEST_CXX
   Testing/GUI/Qt/SSHTunnelTest/main.cxx

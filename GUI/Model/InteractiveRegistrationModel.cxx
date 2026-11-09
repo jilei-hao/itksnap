@@ -29,6 +29,8 @@
 #include "IRISApplication.h"
 #include "GenericImageData.h"
 #include "ImageWrapperBase.h"
+#include "TraceLog.h"
+#include "TraceLogModel.h"
 
 double InteractiveRegistrationModel::GetRotationWidgetRadius()
 {
@@ -151,6 +153,10 @@ bool InteractiveRegistrationModel::ProcessDragEvent(const Vector3d &xSlice, cons
 
   if(!moving || !m_HoveringOverMovingLayer)
     return false;
+
+  // A trace log records the drag, and the view it is made in
+  TraceLog::ScopedContext trace(
+    TraceLogModel::ViewContext(smodel, m_HoveringOverRotationWidget ? "rotate" : "move"));
 
   if(m_HoveringOverRotationWidget)
     {

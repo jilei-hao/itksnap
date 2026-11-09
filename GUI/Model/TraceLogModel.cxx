@@ -38,9 +38,12 @@
 #include "SystemInterface.h"
 #include "TraceLog.h"
 #include "TraceLogReplay.h"
+#include "AffineTransformHelper.h"
 #include "itksys/SystemTools.hxx"
+#include "vnl/vnl_cross.h"
 
 #include <algorithm>
+#include <cmath>
 #include <set>
 
 namespace
@@ -112,6 +115,47 @@ Json::Value Vec3(const Vector3i &v)
   return a;
 }
 
+// Round to the given number of decimal places, so the log stays readable
+double Round(double x, int places)
+{
+  double scale = std::pow(10.0, places);
+  return std::round(x * scale) / scale;
+}
+
+Json::Value Vec3(const Vector3d &v, int places)
+{
+  Json::Value a(Json::arrayValue);
+  for (unsigned int d = 0; d < 3; d++)
+    a.append(Round(v[d], places));
+  return a;
+}
+
+typedef AffineTransformHelper::Mat44 Mat44;
+
+// Free rotation (Tools > Image Free Rotation) transforms the main image and
+// the segmentations; the slice views stay in a fixed world, the reference
+// space, and show at each point p of it the image point T(p). This gets T as
+// a map from that world to the image's own anatomy, both in RAS millimetres.
+// Returns false if the views are not rotated.
+bool ViewToImageRAS(GenericImageData *id, Mat44 &T)
+{
+  if (!id->IsMainLoaded() || !id->GetReferenceSpaceWrapper() || !id->IsFreeRotation())
+    return false;
+  T = AffineTransformHelper::GetRASMatrix(id->GetReferenceSpaceWrapper()->GetITKTransform());
+  return true;
+}
+
+// Where a point given in voxels of the views lies in the image's own anatomy,
+// in RAS millimetres. T is null when the views are not rotated.
+Vector3d VoxelToImageRAS(GenericImageData *id, const Vector3d &voxel, const Mat44 *T)
+{
+  Vector3d ras = id->GetReferenceSpaceWrapper()->TransformVoxelCIndexToNIFTICoordinates(voxel);
+  if (!T)
+    return ras;
+  vnl_vector_fixed<double, 4> x(ras[0], ras[1], ras[2], 1.0), y = (*T) * x;
+  return Vector3d(y[0], y[1], y[2]);
+}
+
 } // namespace
 
 TraceLogModel::TraceLogModel() {}
@@ -132,6 +176,8 @@ TraceLogModel::SetParentModel(GlobalUIModel *parent)
   AddListener(driver, CursorUpdateEvent(), this, &TraceLogModel::OnCursorUpdate);
   AddListener(driver, WrapperDisplayMappingChangeEvent(), this,
               &TraceLogModel::OnDisplayMappingChange);
+  AddListener(driver, WrapperPhysicalExtentsChangeEvent(), this,
+              &TraceLogModel::OnRotationChange);
   for (unsigned int i = 0; i < 3; i++)
     AddListener(parent->GetSliceModel(i), SliceModelGeometryChangeEvent(), this,
                 &TraceLogModel::OnViewGeometryChange);
@@ -230,8 +276,36 @@ TraceLogModel::ViewContext(GenericSliceModel *view, const char *action)
   ctx["action"] = action;
   ctx["slice"] = view->GetSliceIndex();
   ctx["zoom"] = view->GetViewZoom();
-  if (view->GetDriver()->GetCurrentImageData()->IsFreeRotation())
+
+  // While the views are rotated, the slice number is still right in the views'
+  // own world, but the plane it names cuts the anatomy at an angle. Record that
+  // plane in the image's anatomy: the points x with normal . x = offset (RAS mm)
+  GenericImageData *id = view->GetDriver()->GetCurrentImageData();
+  Mat44             T;
+  if (ViewToImageRAS(id, T))
+  {
     ctx["rotated"] = true;
+
+    // Three directions of the views' voxel grid, mapped into the anatomy
+    unsigned int a = (unsigned int)view->GetSliceDirectionInImageSpace();
+    Vector3d     v0 = to_double(view->GetDriver()->GetCursorPosition());
+    v0[a] = view->GetSliceIndex();
+    Vector3d p0 = VoxelToImageRAS(id, v0, &T), e[3];
+    for (unsigned int d = 0; d < 3; d++)
+    {
+      Vector3d v = v0;
+      v[d] += 1.0;
+      e[d] = VoxelToImageRAS(id, v, &T) - p0;
+    }
+
+    // The normal points the way the slice number increases
+    Vector3d n = vnl_cross_3d(e[(a + 1) % 3], e[(a + 2) % 3]);
+    n.normalize();
+    if (dot_product(n, e[a]) < 0)
+      n = -n;
+    ctx["normal"] = Vec3(n, 6);
+    ctx["offset"] = Round(dot_product(n, p0), 3);
+  }
   return ctx;
 }
 
@@ -241,6 +315,17 @@ TraceLogModel::GetCursorState() const
   IRISApplication *driver = m_Parent->GetDriver();
   Json::Value      state(Json::objectValue), slices(Json::arrayValue);
   state["pos"] = Vec3(driver->GetCursorPosition());
+
+  // The point under the cursor in the image's own anatomy, in RAS mm: unlike
+  // the voxel, it means the same before, during and after a free rotation
+  GenericImageData *id = driver->GetCurrentImageData();
+  if (id->IsMainLoaded() && id->GetReferenceSpaceWrapper())
+  {
+    Mat44 T;
+    bool  rotated = ViewToImageRAS(id, T);
+    state["ras"] = Vec3(
+      VoxelToImageRAS(id, to_double(driver->GetCursorPosition()), rotated ? &T : nullptr), 3);
+  }
   state["tp"] = driver->GetCursorTimePoint();
   for (unsigned int i = 0; i < 3; i++)
   {
@@ -305,6 +390,46 @@ TraceLogModel::GetLayoutState() const
     PanelLayoutName(m_Parent->GetDisplayLayoutModel()->GetViewPanelLayout());
   state["layers"] =
     m_Parent->GetGlobalState()->GetSliceViewLayerLayout() == LAYOUT_TILED ? "tiled" : "stacked";
+  return state;
+}
+
+Json::Value
+TraceLogModel::GetRotationState() const
+{
+  Json::Value state(Json::objectValue);
+  Mat44       T;
+  if (!ViewToImageRAS(m_Parent->GetDriver()->GetCurrentImageData(), T))
+  {
+    state["rotated"] = false;
+    return state;
+  }
+
+  // The rotation part of the matrix as an angle about an axis (the direction
+  // it leaves alone). A move alone has angle 0 and no axis.
+  state["rotated"] = true;
+  double c = std::max(-1.0, std::min(1.0, (T(0, 0) + T(1, 1) + T(2, 2) - 1.0) / 2.0));
+  double theta = std::acos(c);
+  Vector3d axis(T(2, 1) - T(1, 2), T(0, 2) - T(2, 0), T(1, 0) - T(0, 1));
+  if (axis.two_norm() < 1e-6 && theta > 1.0)
+  {
+    // A half turn: R + I is then 2 a a', so its longest column lies along a
+    for (unsigned int j = 0; j < 3; j++)
+    {
+      Vector3d col(T(0, j), T(1, j), T(2, j));
+      col[j] += 1.0;
+      if (col.two_norm() > axis.two_norm())
+        axis = col;
+    }
+  }
+  state["angle"] = Round(theta * 180.0 / vnl_math::pi, 3);
+  if (axis.two_norm() > 1e-6)
+    state["axis"] = Vec3(axis.normalize(), 6);
+
+  Json::Value m(Json::arrayValue);
+  for (unsigned int i = 0; i < 4; i++)
+    for (unsigned int j = 0; j < 4; j++)
+      m.append(Round(T(i, j), 6));
+  state["view_to_image"] = m;
   return state;
 }
 
@@ -375,7 +500,10 @@ TraceLogModel::LogSnapshot()
   ev["labels"] = this->GetLabelState();
   ev["segmentation"] = this->GetSegmentationState();
   ev["layout"] = this->GetLayoutState();
+  ev["rotation"] = this->GetRotationState();
   log->PrimeState("tool", ev["tool"]);
+  log->PrimeState("rotation", ev["rotation"]);
+  m_LastRotation = ev["rotation"];
   log->PrimeState("labels", ev["labels"]);
   log->PrimeState("segmentation", ev["segmentation"]);
   log->PrimeState("layout", ev["layout"]);
@@ -476,6 +604,32 @@ TraceLogModel::OnLayoutChange()
   TraceLog *log = m_Parent->GetDriver()->GetTraceLog();
   if (log->IsRecording())
     log->LogStateChange("layout", "layout", this->GetLayoutState());
+}
+
+void
+TraceLogModel::OnRotationChange()
+{
+  // Fired when a layer's transform changes. Free rotation changes the main
+  // image first, then each segmentation; the views follow the active one.
+  TraceLog *log = m_Parent->GetDriver()->GetTraceLog();
+  if (!log->IsRecording())
+    return;
+
+  Json::Value state = this->GetRotationState();
+  if (state == m_LastRotation)
+    return;
+  m_LastRotation = state;
+  log->LogStateChange("rotation", "rotation", state);
+
+  // The cursor stays on the same voxel of the views, which now shows another
+  // point of the anatomy. Keep that out of the cursor events, which record
+  // moves of the cursor: the next one starts from the point it shows now,
+  // which the rotation's view_to_image matrix gives.
+  if (m_Parent->GetDriver()->IsMainImageLoaded() && !m_CursorNotReady &&
+      m_Parent->GetSliceModel(0)->IsSliceInitialized() &&
+      m_Parent->GetSliceModel(1)->IsSliceInitialized() &&
+      m_Parent->GetSliceModel(2)->IsSliceInitialized())
+    log->PrimeState("cursor", this->GetCursorState());
 }
 
 void

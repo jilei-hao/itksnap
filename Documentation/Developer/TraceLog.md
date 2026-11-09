@@ -80,7 +80,7 @@ JSON Lines: one JSON object per line. Every event has:
 | `seq`  | 1, 2, 3, ... in file order |
 | `ms`   | milliseconds since recording started (a steady clock) |
 | `type` | the kind of event, below |
-| `ctx`  | where it came from, when known: `view` (0-2 slice views, 3 the 3D view), `plane` (`axial`, `coronal`, `sagittal`, `3d`), `action` (`click`, `keys`, `scroll`, `slider`, `zoom`, `pan`, `paint`, `polygon`, ...), the view's `slice` and `zoom`, and `rotated` if the views are freely rotated |
+| `ctx`  | where it came from, when known: `view` (0-2 slice views, 3 the 3D view), `plane` (`axial`, `coronal`, `sagittal`, `3d`), `action` (`click`, `keys`, `scroll`, `slider`, `zoom`, `pan`, `paint`, `polygon`, `rotate`, `move`, ...), the view's `slice` and `zoom`; while the image is freely rotated, also `rotated`, and the view's plane in the image's anatomy as `normal` and `offset` (see [Free rotation](#free-rotation)) |
 
 ### Session and data
 
@@ -132,19 +132,49 @@ paintbrush commits each dab as it is applied, each with the same context.
 | Type | Fields |
 |------|--------|
 | `snapshot` | the state of everything below when recording started |
-| `cursor` | `from`, `to`: each with `pos` (voxel), `tp` and `slices` (the slice shown in each of the three views). A slice change by key or wheel is one event, so the time spent on each slice can be measured; a crosshair drag or 4D playback is merged like the state changes below. |
+| `cursor` | `from`, `to`: each with `pos` (voxel), `ras` (the point under the cursor in the image's anatomy, RAS millimetres), `tp` and `slices` (the slice shown in each of the three views). A slice change by key or wheel is one event, so the time spent on each slice can be measured; a crosshair drag or 4D playback is merged like the state changes below. |
 | `view` | `view`, `plane`, `from`, `to`: each with `zoom`, `pos` (view centre), `fit` |
 | `contrast` | `layer`, `from`, `to`: each with `range` (intensities the curve spans) and `points` (`[t, x]`: fraction t of the range is shown at brightness x) |
 | `tool` | `from`, `to`: `mode` (`crosshairs`, `zoom_pan`, `paintbrush`, `polygon`, ...) |
 | `labels` | `from`, `to`: `draw` (active label), `over` (`all`, `visible`, `one`), `over_label` |
 | `segmentation` | `from`, `to`: the selected segmentation `layer` |
 | `layout` | `from`, `to`: `panels` (`all` or the one view shown), `layers` (`stacked`, `tiled`) |
+| `rotation` | `from`, `to`: `rotated`; if rotated, `angle` (degrees), `axis` (unit vector, RAS) and `view_to_image` (row-major 4x4, below) |
 
-`cursor`, `view`, `contrast`, `tool`, `labels`, `segmentation` and `layout` are
-changes of state. Changes of the same state less than a second apart are merged
+`cursor`, `view`, `contrast`, `tool`, `labels`, `segmentation`, `layout` and
+`rotation` are changes of state. Changes of the same state less than a second apart are merged
 into one event, with the state before (`from`) and after (`to`), the number of
 changes `n`, and `ms` to `ms_end`. A drag is one event; zooming one view and the
 views linked to it gives one event per view.
+
+### Free rotation
+
+Tools > Image Free Rotation turns the main image and the segmentations in
+space. The slice views do not move: they stay on a fixed grid of voxels (the
+main image's grid before rotation) and show, at each point of it, the point of
+the rotated image that now lies there. So, while rotated:
+
+- **Voxel positions are on the views' grid.** `pos` and `slices` in `cursor`
+  events, a view's `slice` in `ctx`, the `stroke` points of the paintbrush and
+  the polygon `vertices` all count voxels of that fixed grid. They are exact
+  there, but a slice of it cuts the anatomy at an angle.
+- **`view_to_image`** in the `rotation` event maps that grid's world to the
+  image's own anatomy, both in RAS millimetres: the views show, at the point
+  x, the anatomy at `view_to_image` x. A voxel v of the grid is at x = the
+  image's NIfTI sform times v (the `image` event gives the geometry to build
+  the sform). The matrix also holds the shift that keeps the centre of
+  rotation in place, and any move made with the free rotation tool. A drag of
+  the rotation widget is one event, with `ctx.action` `rotate` (or `move`).
+- **`ras` in `cursor` events is already in the image's anatomy**, so it means
+  the same before, during and after a rotation. A rotation moves the point
+  under the cursor without moving the cursor; that is not written as a cursor
+  event, and the next cursor event starts from the point shown after the
+  rotation.
+- **`normal` and `offset` in `ctx`** give the plane the view shows, in the
+  image's anatomy: the points x with `normal` . x = `offset` (RAS
+  millimetres). The normal points the way the slice number grows.
+- **Edits are not affected**: `runs` are always in the segmentation's own
+  voxels, so a replay is the same whether or not the image was rotated.
 
 ## Limits
 

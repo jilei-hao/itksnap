@@ -42,7 +42,8 @@ class TraceLogReplay;
  * Starts and stops the application's TraceLog, and feeds it what the Logic
  * layer cannot see: the zoom and pan of each slice view, cursor moves (slice
  * changes), the active tool, the drawing and draw-over labels, the selected
- * segmentation, the view layout and the contrast of each image layer. It
+ * segmentation, the view layout, the contrast of each image layer and the
+ * free rotation of the image. It
  * listens to events the models fire anyway and writes only actual changes.
  * Edits are recorded by the Logic layer (see TraceLog).
  *
@@ -144,6 +145,7 @@ protected:
   void OnSelectedSegmentationChange();
   void OnLayoutChange();
   void OnDisplayMappingChange();
+  void OnRotationChange();
 
   // Record the state of everything watched, as one "snapshot" event
   void LogSnapshot();
@@ -154,6 +156,7 @@ protected:
   Json::Value GetLabelState() const;
   Json::Value GetSegmentationState() const;
   Json::Value GetLayoutState() const;
+  Json::Value GetRotationState() const;
   std::map<std::string, Json::Value> GetContrastStates() const;
 
   GlobalUIModel *m_Parent = nullptr;
@@ -162,6 +165,9 @@ protected:
   // The slice views were still being set up when the cursor last moved, so
   // its state is taken again once they are (see OnViewGeometryChange)
   bool m_CursorNotReady = false;
+
+  // The free rotation last recorded (see OnRotationChange)
+  Json::Value m_LastRotation;
   std::unique_ptr<TraceLogReplay> m_Replay;
   bool m_ReplayIntoNewLayer = false;
 
