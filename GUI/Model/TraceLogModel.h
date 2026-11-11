@@ -100,6 +100,12 @@ public:
 
     // Whether the replay went into a new segmentation layer
     bool new_layer = false;
+
+    // Number of sessions in the log, the session of the step that did not
+    // apply (from 1), the number of sessions the replay went through, and,
+    // if the history is incomplete (see TraceLogReplay::IsHistoryIncomplete),
+    // the session the replay started in (from 1)
+    unsigned int log_sessions = 1, failed_session = 0, replay_sessions = 1, incomplete_from = 0;
   };
 
   /**
@@ -110,8 +116,10 @@ public:
 
   /**
    * Read a trace log for replay, and check that it was recorded on an image of
-   * the size of the one loaded. Returns the number of steps. Throws
-   * IRISException if the log cannot be read or does not fit.
+   * the size of the one loaded. A log saved with a segmentation holds the
+   * sessions of its history, and the replay goes through all of them that
+   * lead to the result (see TraceLogReplay). Returns the number of steps.
+   * Throws IRISException if the log cannot be read or does not fit.
    */
   unsigned long PrepareReplay(const std::string &file);
 

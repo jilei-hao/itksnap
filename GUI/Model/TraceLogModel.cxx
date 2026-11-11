@@ -691,8 +691,10 @@ TraceLogModel::PrepareReplay(const std::string &file)
   m_ReplayIntoNewLayer = replay->HasStartingSegmentation();
   if (!m_ReplayIntoNewLayer)
   {
+    // The selected segmentation may be the start, or a point along the history
     LabelImageWrapper *seg = driver->GetSelectedSegmentationLayer();
-    if (!seg || TraceLog::ComputeChecksum(seg) != base.checksum)
+    std::string        checksum = seg ? TraceLog::ComputeChecksum(seg) : std::string();
+    if (!seg || (checksum != base.checksum && !replay->StartFrom(checksum)))
       throw IRISException("Error: Starting segmentation needed. This trace log starts from a "
                           "segmentation that already had labels when recording began, and it "
                           "was recorded by an earlier version of ITK-SNAP, which did not keep a "
@@ -746,6 +748,10 @@ TraceLogModel::Replay(unsigned long n_steps)
 
   const std::vector<TraceLogReplay::Step> &steps = m_Replay->GetSteps();
   result.total_steps = steps.size();
+  result.log_sessions = (unsigned int)m_Replay->GetSessions().size();
+  result.replay_sessions = m_Replay->GetReplaySessions();
+  if (m_Replay->IsHistoryIncomplete())
+    result.incomplete_from = m_Replay->GetBase().session + 1;
   n_steps = std::min(n_steps, (unsigned long)steps.size());
 
   // Mark the edits made by the replay as such, in case this session is being
@@ -776,6 +782,7 @@ TraceLogModel::Replay(unsigned long n_steps)
     if (!seg->GetBufferedRegion().IsInside(s.region))
     {
       result.failed_seq = s.seq;
+      result.failed_session = s.session + 1;
       result.outside = true;
       break;
     }
@@ -791,6 +798,7 @@ TraceLogModel::Replay(unsigned long n_steps)
     if (mismatches)
     {
       result.failed_seq = s.seq;
+      result.failed_session = s.session + 1;
       result.mismatches = mismatches;
       break;
     }

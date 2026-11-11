@@ -186,8 +186,24 @@ public:
    * the layer was loaded from. Loading a segmentation can report the same
    * layer several times; content written before (since the current main
    * image was loaded) is referred to by its event, as "content_seq".
+   *
+   * A layer read from a file that has a trace log next to it (see
+   * SidecarFileName) inherits that file's history: the earlier sessions in
+   * that log are kept, and written before this session in the copy saved
+   * with the layer (see LogSegmentationSaved). The event says how many
+   * sessions it inherited, as "history".
    */
   void LogLayer(LabelImageWrapper *seg, const char *kind);
+
+  /**
+   * The sessions in a trace log file other than the given one, as text,
+   * oldest first; empty if the file does not exist or is not a trace log.
+   * Each session starts with its "session" event. Lines cut short (by a crash
+   * while the file was written) are left out. n_sessions, if given, is set
+   * to the number of sessions returned.
+   */
+  static std::string ReadOtherSessions(const std::string &file, const std::string &session_id,
+                                       unsigned int *n_sessions = nullptr);
 
   /**
    * The checksum of a segmentation, its content as JSON text (see LogLayer)
@@ -213,10 +229,11 @@ public:
 
   /**
    * Record that a segmentation was saved, and copy the log next to the saved
-   * file: the session event, and everything since the current main image was
-   * loaded, so that edits made earlier to another image do not go with it.
-   * The path is not written to the log. Returns false if the copy could not
-   * be written.
+   * file: the history the layer inherited from the file it was read from (see
+   * LogLayer), then this session: its session event and everything since the
+   * current main image was loaded, so that edits made earlier to another
+   * image do not go with it. The path is not written to the log. Returns
+   * false if the copy could not be written.
    */
   bool LogSegmentationSaved(LabelImageWrapper *seg, const std::string &fname);
 
@@ -343,6 +360,9 @@ protected:
 
   // Segmentation layers that have a "layer" event
   std::set<unsigned long> m_KnownLayers;
+
+  // Earlier sessions of the file each layer was read from (see LogLayer)
+  std::map<unsigned long, std::string> m_History;
 
   // The event that holds the content with a given checksum, since the current
   // main image was loaded (see LogLayer)

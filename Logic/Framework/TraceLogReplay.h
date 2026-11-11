@@ -35,11 +35,22 @@
  * \class TraceLogReplay
  * \brief Reads a trace log (see TraceLog) and rebuilds a segmentation from it.
  *
+ * A log can hold several recording sessions: the copy saved next to a
+ * segmentation file starts with the sessions of that file's history, oldest
+ * first (see TraceLog::LogLayer). Event numbers and layer ids belong to their
+ * session.
+ *
  * A replay applies the edits, undos and redos of one segmentation layer, in
- * order, starting from that layer's last starting point in the log (the state
- * when recording started, or when the layer was added or loaded). By default
- * the layer is the one saved last, which is the segmentation that a copy of
- * the log saved next to a segmentation file belongs to.
+ * order. By default the layer is the one saved last in the latest session,
+ * which is the segmentation that a copy of the log saved next to a file
+ * belongs to. The replay starts from the layer's last starting point (the
+ * state when recording started, or when the layer was added or loaded), and
+ * follows its history back from there: a layer loaded from a file starts
+ * from what an earlier save wrote (in the same session or an earlier one),
+ * found by its checksum, so the replay goes on from that save's own starting
+ * point, and so on. It stops at a blank start, at content that was not loaded
+ * (a layer added with labels), or at a loaded file that no save in the log
+ * wrote (it was changed while nothing was recording).
  *
  * Each step records the old label of every voxel it changed. A voxel whose
  * label differs from that is a mismatch: the segmentation has diverged from
@@ -61,6 +72,7 @@ public:
   /** One change to the segmentation: an edit, undo or redo */
   struct Step
   {
+    unsigned int        session = 0; // index in GetSessions()
     unsigned long       seq = 0;
     std::string         kind, op;
     unsigned int        tp = 0;
@@ -72,6 +84,7 @@ public:
   /** The starting point of a layer ("layer" event) */
   struct LayerState
   {
+    unsigned int  session = 0; // index in GetSessions()
     unsigned long seq = 0;
     std::string   kind, checksum;
     unsigned int  size[3] = { 0, 0, 0 };
@@ -86,31 +99,62 @@ public:
   /** Read a trace log. Throws IRISException if it is not a valid trace log. */
   void Read(const std::string &file);
 
-  /** The "session" event: user, session id, start time, application */
-  const Json::Value &GetSession() const { return m_Session; }
+  /** One recording session in the log */
+  struct Session
+  {
+    Json::Value                          header; // the "session" event
+    unsigned long long                   duration_ms = 0;
+    std::map<std::string, unsigned long> event_counts;
+  };
 
-  /** Number of events of each type */
+  /** The sessions in the log, oldest first */
+  const std::vector<Session> &GetSessions() const { return m_SessionList; }
+
+  /** The "session" event of the latest session: user, id, start time, application */
+  const Json::Value &GetSession() const { return m_SessionList.back().header; }
+
+  /** Number of events of each type, in all sessions */
   const std::map<std::string, unsigned long> &GetEventCounts() const { return m_EventCounts; }
 
-  /** Duration of the log, in milliseconds */
-  unsigned long long GetDurationMs() const { return m_LastMs; }
+  /** Recording time of all sessions, in milliseconds */
+  unsigned long long GetDurationMs() const { return m_DurationMs; }
 
   /** Geometry of the main image from the last "image" event, if any */
   bool HasImageGeometry() const { return m_HasImage; }
   const Json::Value &GetImageGeometry() const { return m_Image; }
 
-  /** Layers that have a starting point in the log */
+  /** Layers that have a starting point in the latest session */
   std::vector<unsigned long> GetLayers() const;
 
-  /** The layer to replay. Defaults to the layer saved last. */
+  /** The layer to replay, in the latest session. Defaults to the layer saved last. */
   unsigned long GetTargetLayer() const { return m_TargetLayer; }
   void SetTargetLayer(unsigned long layer);
 
-  /** Starting point of the target layer */
+  /** Starting point of the replay */
   const LayerState &GetBase() const { return m_Base; }
 
-  /** Changes to the target layer after its starting point, in order */
+  /** Changes to the target layer after the starting point, in order */
   const std::vector<Step> &GetSteps() const { return m_Steps; }
+
+  /** Number of sessions the replay goes through */
+  unsigned int GetReplaySessions() const;
+
+  /**
+   * Whether the replay starts after the first session of the log, from a
+   * segmentation that was loaded but that no save in the log wrote: the file
+   * was changed while nothing was recording, so the history before that point
+   * cannot be replayed onto it.
+   */
+  bool IsHistoryIncomplete() const { return m_HistoryIncomplete; }
+
+  /**
+   * Start the replay at the first point of the history where the target
+   * layer's segmentation had the given checksum: a starting point, or a save.
+   * Returns false, and changes nothing, if it never had it. A start at a save
+   * has no content in the log (HasStartingSegmentation is false): the
+   * segmentation to start from has to be given.
+   */
+  bool StartFrom(const std::string &checksum);
 
   /**
    * Checksum of the target layer when it was last saved, if that save came
@@ -148,21 +192,40 @@ public:
 protected:
   void Select();
 
-  Json::Value m_Session, m_Image;
-  bool        m_HasImage = false;
-  std::map<std::string, unsigned long> m_EventCounts;
-  unsigned long long m_LastMs = 0;
+  // Rebuild the base and steps from the links of the history
+  void Concatenate();
 
-  // Everything read from the file, for all layers
-  std::map<unsigned long, std::vector<LayerState>> m_LayerStates;
-  std::vector<std::pair<unsigned long, Step>> m_AllSteps;
-  std::vector<std::pair<unsigned long, LayerState>> m_Saves;
+  std::vector<Session> m_SessionList;
+  Json::Value          m_Image;
+  bool                 m_HasImage = false;
+  std::map<std::string, unsigned long> m_EventCounts;
+  unsigned long long   m_DurationMs = 0;
+
+  // Everything read from the file, for all layers, by session
+  struct SessionData
+  {
+    std::map<unsigned long, std::vector<LayerState>>  layer_states;
+    std::vector<std::pair<unsigned long, Step>>       steps;
+    std::vector<std::pair<unsigned long, LayerState>> saves;
+  };
+  std::vector<SessionData> m_Data;
+
+  // The history of the target layer: one link per starting point, oldest
+  // first, each with the steps from it to the save the next link loaded
+  struct Link
+  {
+    LayerState        base;
+    unsigned long     layer = 0;
+    std::vector<Step> steps;
+  };
+  std::vector<Link> m_Chain;
 
   // Selection for the target layer
   unsigned long m_TargetLayer = 0;
   LayerState m_Base;
   std::vector<Step> m_Steps;
   std::string m_FinalChecksum;
+  bool m_HistoryIncomplete = false;
 };
 
 #endif // TRACELOGREPLAY_H

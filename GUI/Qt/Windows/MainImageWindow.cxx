@@ -1265,16 +1265,21 @@ void MainImageWindow::onTraceLogReplay()
 QString MainImageWindow::RunTraceLogReplay(unsigned long steps)
 {
   TraceLogModel::ReplayResult r = m_Model->GetTraceLogModel()->Replay(steps);
+
+  // Event numbers start over in each session of a log
+  QString event = r.log_sessions > 1
+                    ? tr("event %1 of session %2 in the log").arg(r.failed_seq).arg(r.failed_session)
+                    : tr("event %1 in the log").arg(r.failed_seq);
   QString msg;
   if(r.failed_seq && r.outside)
-    msg = tr("Replayed %1 of %2 edits. The next edit (event %3 in the log) lies outside "
+    msg = tr("Replayed %1 of %2 edits. The next edit (%3) lies outside "
              "this segmentation, so it was not applied.")
-            .arg(r.applied_steps).arg(r.total_steps).arg(r.failed_seq);
+            .arg(r.applied_steps).arg(r.total_steps).arg(event);
   else if(r.failed_seq)
-    msg = tr("Replayed %1 of %2 edits. The next edit (event %3 in the log) does not fit: "
+    msg = tr("Replayed %1 of %2 edits. The next edit (%3) does not fit: "
              "%4 of its voxels have a different label than the log expects, so this "
              "segmentation differs from the one that was traced. That edit was not applied.")
-            .arg(r.applied_steps).arg(r.total_steps).arg(r.failed_seq).arg(r.mismatches);
+            .arg(r.applied_steps).arg(r.total_steps).arg(event).arg(r.mismatches);
   else if(r.compared && r.final_matches)
     msg = tr("Replayed all %1 edits. The result is identical to the segmentation that was "
              "saved with this log.").arg(r.applied_steps);
@@ -1284,6 +1289,13 @@ QString MainImageWindow::RunTraceLogReplay(unsigned long steps)
   else
     msg = tr("Replayed %1 of %2 edits.").arg(r.applied_steps).arg(r.total_steps);
 
+  if(r.replay_sessions > 1)
+    msg += " " + tr("The edits come from %1 recording sessions, replayed in order.")
+                   .arg(r.replay_sessions);
+  if(r.incomplete_from)
+    msg += " " + tr("The log also holds earlier sessions, but session %1 starts from a "
+                    "segmentation that none of them saved (it was changed while not "
+                    "recording), so the replay starts there.").arg(r.incomplete_from);
   if(r.new_layer)
     msg += " " + tr("The result is in a new segmentation layer; the segmentation that was "
                     "open is unchanged.");

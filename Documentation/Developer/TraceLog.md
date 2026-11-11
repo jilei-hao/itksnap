@@ -32,6 +32,15 @@ session event and everything since the current image was loaded, so edits made
 earlier in the session to another image (another patient) do not go with it.
 The working file keeps the whole session.
 
+**The copy keeps the segmentation's history.** When a segmentation is loaded
+from a file that has a log next to it, the sessions in that log come with it,
+and every later save writes them first, then the current session. So working
+on `liver.nii.gz` over several days, opening and saving it each time, leaves
+one `liver.nii.gz.trace.jsonl` with all the sessions, oldest first. Saving
+under a new name takes the history along; saving twice, or reloading the file
+and saving again, writes each session once. Nothing is recorded while
+recording is off, so a change made then is a gap in the history (see below).
+
 No file names or paths are written to the log. An image is identified by its
 geometry, a segmentation by a checksum.
 
@@ -60,11 +69,32 @@ The image is the only other thing needed.
   segmentation.
 
 A replay applies the edits, undos and redos of one segmentation layer: by
-default the layer saved last, which is the one the copy next to a file belongs
-to. It starts from that layer's last starting point (when recording began, or
-when the layer was added, loaded or reloaded from its file). Each step stores
-the old label of every voxel it changes; a voxel with any other label stops the
-replay at that step.
+default the layer saved last in the latest session, which is the one the copy
+next to a file belongs to. It goes back through the layer's history as far as
+the history is continuous:
+
+- The layer's last starting point is when recording began, or when the layer
+  was added, loaded or reloaded from its file.
+- A segmentation that was loaded came from some save. If a save earlier in the
+  log (in the same session or an earlier one) wrote exactly that content (same
+  checksum), the replay goes on back from that save's own layer and starting
+  point, and so on.
+- It stops at a blank start, at a layer that was added with labels (not
+  loaded), or at a loaded segmentation that no save in the log wrote. The last
+  case is a **gap**: the file was changed while recording was off, so the
+  edits before cannot lead to it. The replay then starts after the gap from the
+  copy the log holds, and says so (`History: incomplete` in `-trace-info`).
+
+So a full replay of a file worked on over several sessions rebuilds it from
+the first session's start, and its result is compared with the last save.
+Logs kept apart (one per copy of a segmentation, say) can be joined the same
+way, oldest first: `cat day1.trace.jsonl day2.trace.jsonl > all.trace.jsonl`.
+The sessions link wherever one loaded what another saved. The
+command line can also start partway, from a segmentation file anywhere along
+the history: a starting point or a save of the layer (found by its checksum).
+
+Each step stores the old label of every voxel it changes; a voxel with any
+other label stops the replay at that step.
 
 Logs recorded before ITK-SNAP kept the starting segmentation in them can still
 be replayed when they started blank. If they started from a segmentation with
@@ -86,9 +116,9 @@ JSON Lines: one JSON object per line. Every event has:
 
 | Type | Fields |
 |------|--------|
-| `session` | `format` (`itksnap-trace`), `version` (1), `session` (random id), `user`, `app`, `started` (UTC) |
+| `session` | `format` (`itksnap-trace`), `version` (1), `session` (random id), `user`, `app`, `started` (UTC). Starts each session; a copy saved with a segmentation can hold several sessions, oldest first, and `seq`, `ms` and layer ids start over in each. |
 | `image` | `loaded`; if loaded, `size`, `tps` (time points), `spacing`, `origin`, `direction` (row-major 3x3) |
-| `layer` | starting point of a segmentation layer: `layer` (id), `kind` (`present` when recording started, `added`, `loaded`), `size`, `tps`, `checksum`, `blank`; if not blank, `content`: its labels as runs `[n, label]` over all voxels in raster order, or `content_seq`: the event that already holds the same content (since the image was loaded) |
+| `layer` | starting point of a segmentation layer: `layer` (id), `kind` (`present` when recording started, `added`, `loaded`), `size`, `tps`, `checksum`, `blank`; if not blank, `content`: its labels as runs `[n, label]` over all voxels in raster order, or `content_seq`: the event that already holds the same content (since the image was loaded); `history`: the number of earlier sessions it brought from the log next to the file it was read from |
 | `layer_removed` | `layer` |
 | `save` | `layer`, `tps`, `checksum` of what was saved |
 | `undo_cleared` | `layer`: the undo history was cleared (e.g. after a Label Editor relabel) |

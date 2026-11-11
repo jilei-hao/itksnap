@@ -182,6 +182,7 @@ TraceLog::Start(const std::string &dir, const std::string &user, const std::stri
   m_Context.clear();
   m_KnownLayers.clear();
   m_ContentSeq.clear();
+  m_History.clear();
   s_Active = this;
 
   Json::Value f(Json::objectValue);
@@ -620,6 +621,23 @@ TraceLog::LogLayer(LabelImageWrapper *seg, const char *kind)
   ev["checksum"] = checksum;
   ev["blank"] = blank;
 
+  // A layer read from a file inherits the history of that file: the sessions
+  // in the trace log next to it, other than this one (which a reload of a
+  // file saved in this session would otherwise bring in twice)
+  const char  *fn = seg->GetFileName();
+  unsigned int n_history = 0;
+  std::string  history =
+    (fn && fn[0]) ? ReadOtherSessions(SidecarFileName(fn), m_SessionId, &n_history) : "";
+  if (n_history)
+  {
+    m_History[seg->GetUniqueId()] = history;
+    ev["history"] = n_history;
+  }
+  else
+  {
+    m_History.erase(seg->GetUniqueId());
+  }
+
   m_KnownLayers.insert(seg->GetUniqueId());
   auto written = m_ContentSeq.find(checksum);
   if (blank)
@@ -708,6 +726,7 @@ TraceLog::TraceLayers(const std::vector<LabelImageWrapper *> &layers, LabelImage
     if (!current.count(id))
     {
       m_KnownLayers.erase(id);
+      m_History.erase(id);
       Json::Value ev(Json::objectValue);
       ev["layer"] = (Json::UInt64)id;
       this->LogLocked("layer_removed", ev);
@@ -756,6 +775,7 @@ TraceLog::LogMainImage(ImageWrapperBase *main)
   this->LogLocked("image", ev);
   m_KnownLayers.clear();
   m_ContentSeq.clear();
+  m_History.clear();
 }
 
 bool
@@ -773,13 +793,16 @@ TraceLog::LogSegmentationSaved(LabelImageWrapper *seg, const std::string &fname)
   if (!this->IsRecording())
     return false;
 
-  // The copy: the session line, then everything from the event of the
-  // current main image on
+  // The copy: the history of the file the layer was read from, the session
+  // line, then everything from the event of the current main image on
   std::ifstream in(m_FileName.c_str(), std::ios::in | std::ios::binary);
   std::ofstream out(SidecarFileName(fname).c_str(),
                     std::ios::out | std::ios::trunc | std::ios::binary);
   if (!in.good() || !out.good())
     return false;
+  auto history = m_History.find(seg->GetUniqueId());
+  if (history != m_History.end())
+    out << history->second;
   if (m_ImageOffset > 0)
   {
     out << m_SessionLine;
@@ -820,6 +843,58 @@ TraceLog::FormatChecksum(unsigned long long hash)
   char buf[64];
   snprintf(buf, sizeof(buf), "fnv1a64:%016llx", hash);
   return buf;
+}
+
+std::string
+TraceLog::ReadOtherSessions(const std::string &file, const std::string &session_id,
+                            unsigned int *n_sessions)
+{
+  if (n_sessions)
+    *n_sessions = 0;
+  std::ifstream in(file.c_str(), std::ios::in | std::ios::binary);
+  if (!in.good())
+    return std::string();
+
+  std::string  text, line;
+  bool         keep = false, first = true;
+  unsigned int n = 0;
+  Json::Reader reader;
+  while (std::getline(in, line))
+  {
+    if (!line.empty() && line.back() == '\r')
+      line.pop_back();
+    if (line.empty())
+      continue;
+
+    // A "session" event starts each session. It is a short line; the lines
+    // that can be long (edits, layer content) are never parsed here.
+    Json::Value ev;
+    bool is_session = line.size() < 4096 && line.find("\"type\":\"session\"") != std::string::npos &&
+                      reader.parse(line, ev, false) && ev["type"].asString() == "session" &&
+                      ev["format"].asString() == FormatName();
+    if (is_session)
+    {
+      keep = ev["session"].asString() != session_id;
+      if (keep)
+        ++n;
+    }
+    else if (first)
+    {
+      return std::string(); // not a trace log
+    }
+    first = false;
+
+    // Every event is one JSON object; a line cut short is left out
+    if (keep && line.back() == '}')
+    {
+      text += line;
+      text += '\n';
+    }
+  }
+
+  if (n_sessions)
+    *n_sessions = n;
+  return text;
 }
 
 std::string

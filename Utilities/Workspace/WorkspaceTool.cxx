@@ -380,10 +380,16 @@ void PrintTraceLogInfo(const string &file, ostream &os)
   TraceLogReplay replay;
   replay.Read(file);
 
-  const Json::Value &s = replay.GetSession();
-  os << "Session:  " << s["session"].asString() << endl;
-  os << "User:     " << s["user"].asString() << endl;
-  os << "Started:  " << s["started"].asString() << " with " << s["app"].asString() << endl;
+  // A log saved with a segmentation holds the sessions of its history
+  const std::vector<TraceLogReplay::Session> &sessions = replay.GetSessions();
+  os << "Sessions: " << sessions.size() << (sessions.size() > 1 ? ", oldest first" : "") << endl;
+  for(size_t i = 0; i < sessions.size(); i++)
+    {
+    const Json::Value &s = sessions[i].header;
+    os << "  " << i + 1 << ". " << s["session"].asString() << "  " << s["user"].asString()
+       << ", " << s["started"].asString() << " with " << s["app"].asString() << ", "
+       << sessions[i].duration_ms / 1000 << " s" << endl;
+    }
   os << "Duration: " << replay.GetDurationMs() / 1000 << " s" << endl;
   os << "Events:  ";
   for(const auto &kv : replay.GetEventCounts())
@@ -392,9 +398,18 @@ void PrintTraceLogInfo(const string &file, ostream &os)
 
   const TraceLogReplay::LayerState &base = replay.GetBase();
   os << "Replay:   segmentation layer " << replay.GetTargetLayer() << ", "
-     << replay.GetSteps().size() << " edits, starting from a segmentation that was "
-     << base.kind << " (" << base.size[0] << " x " << base.size[1] << " x " << base.size[2]
+     << replay.GetSteps().size() << " edits";
+  if(sessions.size() > 1)
+    os << " in " << replay.GetReplaySessions() << " session(s)";
+  os << ", starting from a segmentation that was " << base.kind;
+  if(sessions.size() > 1)
+    os << " in session " << base.session + 1;
+  os << " (" << base.size[0] << " x " << base.size[1] << " x " << base.size[2]
      << ", " << base.tps << " time point(s), " << base.checksum << ")" << endl;
+  if(replay.IsHistoryIncomplete())
+    os << "History:  incomplete. Session " << base.session + 1 << " starts from a segmentation "
+       << "that no earlier session saved (it was changed while not recording), so the replay "
+       << "starts there." << endl;
   if(replay.GetFinalChecksum().size())
     os << "Result:   " << replay.GetFinalChecksum() << " (as saved)" << endl;
   else
@@ -444,8 +459,9 @@ void ReplayTraceLog(const string &file, const string &start, const string &out,
                         (unsigned long) sz[3], base.size[0], base.size[1], base.size[2],
                         base.tps);
 
+  // A segmentation from along the history starts the replay there
   std::string checksum = TraceLogReplay::ComputeChecksum(seg);
-  if(checksum != base.checksum)
+  if(checksum != base.checksum && !replay.StartFrom(checksum))
     throw IRISException("The starting segmentation (%s) is not the one the trace log starts "
                         "from (%s, %s).%s", checksum.c_str(), base.checksum.c_str(),
                         base.kind.c_str(),
@@ -458,10 +474,11 @@ void ReplayTraceLog(const string &file, const string &start, const string &out,
     {
     unsigned long mismatches = TraceLogReplay::ApplyStep(seg, steps[i]);
     if(mismatches)
-      throw IRISException("Edit %lu of %lu (event %lu, %s \"%s\") does not fit: %lu voxels "
-                          "have a different label than the log expects.",
-                          (unsigned long) i + 1, (unsigned long) steps.size(), steps[i].seq,
-                          steps[i].kind.c_str(), steps[i].op.c_str(), mismatches);
+      throw IRISException("Edit %lu of %lu (session %u, event %lu, %s \"%s\") does not fit: "
+                          "%lu voxels have a different label than the log expects.",
+                          (unsigned long) i + 1, (unsigned long) steps.size(),
+                          steps[i].session + 1, steps[i].seq, steps[i].kind.c_str(),
+                          steps[i].op.c_str(), mismatches);
     }
   os << "Replayed " << n << " of " << steps.size() << " edits" << endl;
 

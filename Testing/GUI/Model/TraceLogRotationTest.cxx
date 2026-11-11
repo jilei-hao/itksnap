@@ -497,6 +497,39 @@ int main(int argc, char *argv[])
           "replay: all " + std::to_string(result.total_steps) + " steps applied");
     check(result.new_layer, "replay: into a new layer");
     check(result.compared && result.final_matches, "replay: identical to the saved segmentation");
+
+    //=== A later session on the saved file: the log saved after it keeps the
+    //=== first session, and the replay goes through both
+    if (!tlm->StartRecording("rotation-test"))
+      throw IRISException("Could not start recording again");
+    driver->OpenImage(fn_out.c_str(), LABEL_ROLE, wl);
+    LabelImageWrapper  *seg2 = driver->GetSelectedSegmentationLayer();
+    itk::ImageRegion<3> box;
+    for (unsigned int d = 0; d < 3; d++)
+    {
+      box.SetIndex(d, 5);
+      box.SetSize(d, 3);
+    }
+    check(driver->PaintRegionWithLabel(box, 2, "later session") == 27, "the later session paints");
+    std::string fn_out2 = tmpdir + "/painted2.nii.gz";
+    {
+      SmartPtr<AbstractSaveImageDelegate> del = driver->CreateSaveDelegateForLayer(seg2, LABEL_ROLE);
+      SmartPtr<GuidedNativeImageIO>       io = GuidedNativeImageIO::New();
+      Registry                            reg_io;
+      IRISWarningList                     wl_save;
+      del->SaveImage(fn_out2, io, reg_io, wl_save);
+    }
+    tlm->StopRecording();
+
+    tlm->PrepareReplay(TraceLog::SidecarFileName(fn_out2));
+    TraceLogModel::ReplayResult result2 = tlm->Replay((unsigned long)-1);
+    check(result2.log_sessions == 2 && result2.replay_sessions == 2 && !result2.incomplete_from,
+          "later session: the replay goes through both sessions");
+    check(result2.applied_steps == result2.total_steps && result2.total_steps == 3,
+          "later session: the two dabs, then its own edit (" +
+            std::to_string(result2.total_steps) + " steps)");
+    check(result2.new_layer && result2.compared && result2.final_matches,
+          "later session: identical to the saved segmentation");
   }
   catch (std::exception &e)
   {

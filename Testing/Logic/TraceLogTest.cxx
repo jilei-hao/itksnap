@@ -430,26 +430,67 @@ int main(int argc, char *argv[])
   std::string saved_checksum2 = TraceLog::ComputeChecksum(seg);
   app->StopTraceLog();
 
+  // The file loaded had a log next to it, so the copy saved with the result
+  // holds both sessions, and the replay goes back to the first one's start
+  std::string              text2;
+  std::vector<Json::Value> events2 = ReadEvents(TraceLog::SidecarFileName(segfile2), text2);
+  bool loaded_with_history = false;
+  for (const Json::Value &ev : events2)
+    if (ev["type"].asString() == "layer" && ev["kind"].asString() == "loaded")
+      loaded_with_history = ev["history"].asUInt() == 1;
+  CHECK(loaded_with_history, "the loaded layer inherits one session of history");
+
   TraceLogReplay replay2;
   replay2.Read(TraceLog::SidecarFileName(segfile2));
-  CHECK(replay2.GetBase().kind == "loaded", "the second log starts from the loaded file");
-  CHECK(replay2.GetBase().checksum == saved_checksum, "...whose checksum is the first save's");
+  CHECK(replay2.GetSessions().size() == 2, "the second log holds the first session too");
+  CHECK(replay2.GetReplaySessions() == 2 && !replay2.IsHistoryIncomplete(),
+        "the replay goes through both sessions");
+  CHECK(replay2.GetBase().blank && replay2.GetBase().session == 0,
+        "...from the blank start of the first");
+  CHECK(replay2.GetSteps().size() == 9, "the first session's 8 edits, then box D");
+  {
+    TraceLogReplay::LabelImage4D::Pointer all = replay2.CreateBlankSegmentation();
+    for (const TraceLogReplay::Step &s : replay2.GetSteps())
+      CHECK(TraceLogReplay::ApplyStep(all, s) == 0, "each step of both sessions applies");
+    CHECK(TraceLogReplay::ComputeChecksum(all) == saved_checksum2,
+          "replaying both sessions reproduces the second save");
+  }
+
+  // Starting from the file the second session loaded
+  CHECK(replay2.StartFrom(saved_checksum), "the replay can start from the loaded file");
+  CHECK(replay2.GetBase().kind == "loaded" && replay2.GetBase().session == 1,
+        "...which the second session loaded");
   CHECK(!replay2.GetBase().blank && !replay2.GetBase().content.empty(),
         "the log keeps a copy of a loaded segmentation with labels");
   TraceLogReplay::LabelImage4D::Pointer from_log = replay2.CreateStartingSegmentation();
   CHECK(TraceLogReplay::ComputeChecksum(from_log) == saved_checksum,
         "the copy in the log is the loaded segmentation");
+  CHECK(replay2.GetSteps().size() == 1, "one edit after loading");
   CHECK(TraceLogReplay::ApplyStep(from_log, replay2.GetSteps()[0]) == 0 &&
           TraceLogReplay::ComputeChecksum(from_log) == saved_checksum2,
         "replaying from the copy in the log reproduces the save");
+  CHECK(!replay2.StartFrom("fnv1a64:0000000000000000"), "a state never reached is no start");
 
-  // A log from before the starting segmentation and "blank" were recorded:
-  // a blank start is still recognized; one with labels needs its file
+  // A log from before the starting segmentation and "blank" were recorded
+  // (and before logs kept their history): a blank start is still recognized;
+  // one with labels needs its file. Such a log has one session: the second.
   {
-    std::string text2, old_style;
-    ReadEvents(TraceLog::SidecarFileName(segfile2), text2);
-    std::istringstream lines(text2);
+    std::string        last_session;
+    std::istringstream all_lines(text2);
     std::string        line;
+    while (std::getline(all_lines, line))
+    {
+      if (line.find("\"type\":\"session\"") != std::string::npos)
+        last_session.clear();
+      last_session += line + "\n";
+    }
+
+    // Also the fixture of the command line test that starts from the wrong
+    // segmentation (TraceLogReplayCLIWrongStart)
+    std::ofstream((work + "/seg2_last_session.jsonl").c_str()) << last_session;
+
+    std::string        old_style;
+    std::istringstream lines(last_session);
     while (std::getline(lines, line))
     {
       size_t c = line.find(",\"content\":");
@@ -466,6 +507,10 @@ int main(int argc, char *argv[])
     TraceLogReplay old_replay;
     old_replay.Read(old_file);
     CHECK(!old_replay.HasStartingSegmentation(), "an old log does not hold a start with labels");
+    CHECK(old_replay.GetSteps().size() == 1, "...and replays the edit after loading");
+    TraceLogReplay::LabelImage4D::Pointer from_file = ReadSegmentation(segfile);
+    CHECK(TraceLogReplay::ApplyStep(from_file, old_replay.GetSteps()[0]) == 0, "it applies");
+    CHECK(TraceLogReplay::ComputeChecksum(from_file) == saved_checksum2, "and reproduces the save");
 
     std::string text1, old_style1;
     ReadEvents(sidecar, text1);
@@ -483,10 +528,84 @@ int main(int argc, char *argv[])
     old_replay1.Read(old_file1);
     CHECK(old_replay1.GetBase().blank, "an old log's blank start is recognized by its checksum");
   }
-  CHECK(replay2.GetSteps().size() == 1, "one edit after loading");
-  TraceLogReplay::LabelImage4D::Pointer from_file = ReadSegmentation(segfile);
-  CHECK(TraceLogReplay::ApplyStep(from_file, replay2.GetSteps()[0]) == 0, "it applies");
-  CHECK(TraceLogReplay::ComputeChecksum(from_file) == saved_checksum2, "and reproduces the save");
+
+  // ---- Later sessions on the file: every save keeps its whole history ----
+  // Save As, save again in place, reload from the file and save once more:
+  // each session is in the log once
+  CHECK(app->StartTraceLog(work + "/logs", "tester", "TraceLogTest"), "a later session starts");
+  app->OpenImage(segfile2.c_str(), LABEL_ROLE, wl);
+  seg = app->GetSelectedSegmentationLayer();
+
+  // A save that leaves the segmentation as it was loaded: a replay must not
+  // take it for where the loaded file came from
+  std::string segfile7 = work + "/seg7.nii.gz";
+  CHECK(app->PaintRegionWithLabel(Box(42, 43), 3, "box undone") == 8, "a box to undo");
+  app->Undo();
+  Save(app, seg, segfile7);
+  CHECK(TraceLog::ComputeChecksum(seg) == saved_checksum2, "...saved as it was loaded");
+
+  CHECK(app->PaintRegionWithLabel(Box(44, 45), 3, "box D2") == 8, "box D2 paints 8 voxels");
+  Save(app, seg, segfile7);
+  CHECK(app->PaintRegionWithLabel(Box(46, 47), 4, "box D3") == 8, "box D3 paints 8 voxels");
+  Save(app, seg, segfile7);
+  {
+    SmartPtr<ReloadSegmentationWrapperDelegate> reload7 = ReloadSegmentationWrapperDelegate::New();
+    reload7->Initialize(app, seg);
+    reload7->ValidateHeader(wl);
+    reload7->UpdateWrapper();
+  }
+  CHECK(app->PaintRegionWithLabel(Box(48, 49), 5, "box D4") == 8, "box D4 paints 8 voxels");
+  Save(app, seg, segfile7);
+  std::string saved_checksum7 = TraceLog::ComputeChecksum(seg);
+  app->StopTraceLog();
+
+  TraceLogReplay replay7;
+  replay7.Read(TraceLog::SidecarFileName(segfile7));
+  CHECK(replay7.GetSessions().size() == 3, "the file's log holds three sessions, each once (got " +
+                                             std::to_string(replay7.GetSessions().size()) + ")");
+  CHECK(replay7.GetReplaySessions() == 3 && !replay7.IsHistoryIncomplete() &&
+          replay7.GetBase().blank && replay7.GetBase().session == 0,
+        "the replay goes back through all three to the first blank start");
+  CHECK(replay7.GetSteps().size() == 14,
+        "8 edits, box D, a box and its undo, then D2, D3 and D4 (got " +
+          std::to_string(replay7.GetSteps().size()) + ")");
+  {
+    TraceLogReplay::LabelImage4D::Pointer all = replay7.CreateBlankSegmentation();
+    for (const TraceLogReplay::Step &s : replay7.GetSteps())
+      CHECK(TraceLogReplay::ApplyStep(all, s) == 0, "each step of the three sessions applies");
+    CHECK(TraceLogReplay::ComputeChecksum(all) == saved_checksum7,
+          "replaying the whole history reproduces the last save");
+    CHECK(replay7.GetFinalChecksum() == saved_checksum7, "the log says what was saved last");
+  }
+
+  // ---- A change made while not recording breaks the history --------------
+  app->OpenImage(segfile7.c_str(), LABEL_ROLE, wl);
+  seg = app->GetSelectedSegmentationLayer();
+  CHECK(app->PaintRegionWithLabel(Box(50, 51), 6, "unrecorded") == 8, "an unrecorded change");
+  Save(app, seg, segfile7);
+  CHECK(app->StartTraceLog(work + "/logs", "tester", "TraceLogTest"), "recording resumes");
+  app->OpenImage(segfile7.c_str(), LABEL_ROLE, wl);
+  seg = app->GetSelectedSegmentationLayer();
+  CHECK(app->PaintRegionWithLabel(Box(52, 53), 7, "box D5") == 8, "box D5 paints 8 voxels");
+  std::string segfile8 = work + "/seg8.nii.gz";
+  Save(app, seg, segfile8);
+  std::string saved_checksum8 = TraceLog::ComputeChecksum(seg);
+  app->StopTraceLog();
+
+  TraceLogReplay replay8;
+  replay8.Read(TraceLog::SidecarFileName(segfile8));
+  CHECK(replay8.GetSessions().size() == 4, "the log keeps the earlier sessions");
+  CHECK(replay8.IsHistoryIncomplete() && replay8.GetBase().session == 3 &&
+          replay8.GetBase().kind == "loaded",
+        "but the replay starts at the session after the unrecorded change, and says so");
+  CHECK(replay8.HasStartingSegmentation() && replay8.GetSteps().size() == 1,
+        "...from the copy in the log, with one edit");
+  {
+    TraceLogReplay::LabelImage4D::Pointer from8 = replay8.CreateStartingSegmentation();
+    CHECK(TraceLogReplay::ApplyStep(from8, replay8.GetSteps()[0]) == 0 &&
+            TraceLogReplay::ComputeChecksum(from8) == saved_checksum8,
+          "which reproduces the save");
+  }
 
   // ---- A second layer, undo and redo of one-delta edits, a temporary ------
   // ---- commit that is redone, and a reload from file ----------------------
@@ -534,10 +653,23 @@ int main(int argc, char *argv[])
   Save(app, seg3, segfile4);
   std::string saved_checksum4 = TraceLog::ComputeChecksum(seg3);
 
+  // The reload brought back what was saved, so the replay goes on through it
+  // from the layer's blank start, leaving out box F
   TraceLogReplay replay4;
   replay4.Read(TraceLog::SidecarFileName(segfile4));
-  CHECK(replay4.GetBase().kind == "loaded" && replay4.GetBase().checksum == saved_checksum3,
-        "the reload is the layer's new starting point");
+  CHECK(replay4.GetSessions().size() == 1, "a file saved in this session has no older history");
+  CHECK(replay4.GetBase().kind == "added" && replay4.GetBase().blank &&
+          replay4.GetSteps().size() == 7,
+        "the replay goes through the reload, from the blank start: 6 steps, then box G");
+  {
+    TraceLogReplay::LabelImage4D::Pointer all = replay4.CreateBlankSegmentation();
+    for (const TraceLogReplay::Step &s : replay4.GetSteps())
+      CHECK(TraceLogReplay::ApplyStep(all, s) == 0, "each step applies, box F left out");
+    CHECK(TraceLogReplay::ComputeChecksum(all) == saved_checksum4, "and reproduces the save");
+  }
+  CHECK(replay4.StartFrom(saved_checksum3) && replay4.GetBase().kind == "loaded" &&
+          replay4.GetBase().checksum == saved_checksum3,
+        "the replay can start at the reload");
   CHECK(replay4.GetSteps().size() == 1, "only box G comes after it");
   TraceLogReplay::LabelImage4D::Pointer from_seg3 = ReadSegmentation(segfile3);
   for (const TraceLogReplay::Step &s : replay4.GetSteps())

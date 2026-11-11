@@ -1591,7 +1591,7 @@ set_tests_properties(TraceLogReplayCLIFromLog PROPERTIES
 # A replay from a segmentation that is not the log's starting point fails
 add_test(NAME TraceLogReplayCLIWrongStart
   COMMAND itksnap-wt
-    -trace-replay "${TEMP}/TraceLogTest/seg2.nii.gz.trace.jsonl" blank
+    -trace-replay "${TEMP}/TraceLogTest/seg2_last_session.jsonl" blank
                   "${TEMP}/TraceLogTest/wrong.nii.gz")
 set_tests_properties(TraceLogReplayCLIWrongStart PROPERTIES
   FIXTURES_REQUIRED TraceLogData

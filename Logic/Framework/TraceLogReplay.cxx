@@ -20,6 +20,7 @@
 
 =========================================================================*/
 #include "TraceLogReplay.h"
+#include <set>
 #include "TraceLog.h"
 #include "IRISException.h"
 #include "itkImageRegionIterator.h"
@@ -169,10 +170,10 @@ TraceLogReplay::Read(const std::string &file)
     std::string   type = ev["type"].asString();
     unsigned long seq = (unsigned long)ev["seq"].asUInt64();
     unsigned long layer = (unsigned long)ev["layer"].asUInt64();
-    m_EventCounts[type]++;
-    m_LastMs = std::max(m_LastMs, (unsigned long long)ev["ms"].asUInt64());
 
-    if (line_no == 1)
+    // Each session starts with its header; event numbers and layer ids start
+    // over in each session
+    if (type == "session" || line_no == 1)
     {
       if (type != "session" || ev["format"].asString() != TraceLog::FormatName())
         throw IRISException("Error: Not a trace log. %s does not start with an ITK-SNAP "
@@ -181,7 +182,22 @@ TraceLogReplay::Read(const std::string &file)
         throw IRISException("Error: Trace log too new. %s uses version %d of the format; "
                             "this ITK-SNAP reads version %d.", file.c_str(),
                             ev["version"].asInt(), TraceLog::FORMAT_VERSION);
-      m_Session = ev;
+      Session session;
+      session.header = ev;
+      m_SessionList.push_back(session);
+      m_Data.push_back(SessionData());
+      contents_by_seq.clear();
+    }
+
+    unsigned int cur = (unsigned int)m_SessionList.size() - 1;
+    Session     &session = m_SessionList.back();
+    SessionData &data = m_Data.back();
+    m_EventCounts[type]++;
+    session.event_counts[type]++;
+    session.duration_ms = std::max(session.duration_ms, (unsigned long long)ev["ms"].asUInt64());
+
+    if (type == "session")
+    {
     }
     else if (type == "image")
     {
@@ -194,6 +210,7 @@ TraceLogReplay::Read(const std::string &file)
     else if (type == "layer")
     {
       LayerState ls;
+      ls.session = cur;
       ls.seq = seq;
       ls.kind = ev["kind"].asString();
       ls.checksum = ev["checksum"].asString();
@@ -235,20 +252,22 @@ TraceLogReplay::Read(const std::string &file)
         throw IRISException("Error: Invalid trace log. The content of layer %lu in event %lu "
                             "covers %llu voxels, but the layer has %llu.",
                             layer, seq, total, expected);
-      m_LayerStates[layer].push_back(ls);
+      data.layer_states[layer].push_back(ls);
     }
     else if (type == "save")
     {
       LayerState ls;
+      ls.session = cur;
       ls.seq = seq;
       ls.kind = "save";
       ls.checksum = ev["checksum"].asString();
       ls.tps = ev["tps"].asUInt();
-      m_Saves.push_back(std::make_pair(layer, ls));
+      data.saves.push_back(std::make_pair(layer, ls));
     }
     else if (type == "edit" || type == "undo" || type == "redo")
     {
       Step s;
+      s.session = cur;
       s.seq = seq;
       s.kind = type;
       s.op = ev["op"].asString();
@@ -292,25 +311,28 @@ TraceLogReplay::Read(const std::string &file)
                             "region has %lu.", seq, total,
                             (unsigned long)s.region.GetNumberOfPixels());
 
-      m_AllSteps.push_back(std::make_pair(layer, s));
+      data.steps.push_back(std::make_pair(layer, s));
     }
   }
 
-  if (m_Session.isNull())
+  if (m_SessionList.empty())
     throw IRISException("Error: Not a trace log. %s is empty.", file.c_str());
+  for (const Session &session : m_SessionList)
+    m_DurationMs += session.duration_ms;
 
-  // Replay the layer saved last; failing that, the layer edited last. Only
-  // layers with a starting point can be replayed, which leaves out the snake
-  // mode's own layers.
-  if (!m_Saves.empty())
-    m_TargetLayer = m_Saves.back().first;
+  // Replay the layer saved last in the latest session; failing that, the
+  // layer edited last. Only layers with a starting point can be replayed,
+  // which leaves out the snake mode's own layers.
+  const SessionData &last = m_Data.back();
+  if (!last.saves.empty())
+    m_TargetLayer = last.saves.back().first;
   else
   {
-    for (const auto &ls : m_AllSteps)
-      if (m_LayerStates.count(ls.first))
+    for (const auto &ls : last.steps)
+      if (last.layer_states.count(ls.first))
         m_TargetLayer = ls.first;
-    if (!m_TargetLayer && !m_LayerStates.empty())
-      m_TargetLayer = m_LayerStates.begin()->first;
+    if (!m_TargetLayer && !last.layer_states.empty())
+      m_TargetLayer = last.layer_states.begin()->first;
   }
 
   this->Select();
@@ -320,9 +342,23 @@ std::vector<unsigned long>
 TraceLogReplay::GetLayers() const
 {
   std::vector<unsigned long> layers;
-  for (const auto &kv : m_LayerStates)
-    layers.push_back(kv.first);
+  if (!m_Data.empty())
+    for (const auto &kv : m_Data.back().layer_states)
+      layers.push_back(kv.first);
   return layers;
+}
+
+unsigned int
+TraceLogReplay::GetReplaySessions() const
+{
+  std::set<unsigned int> sessions;
+  for (const Link &link : m_Chain)
+  {
+    sessions.insert(link.base.session);
+    for (const Step &s : link.steps)
+      sessions.insert(s.session);
+  }
+  return (unsigned int)sessions.size();
 }
 
 void
@@ -335,24 +371,148 @@ TraceLogReplay::SetTargetLayer(unsigned long layer)
 void
 TraceLogReplay::Select()
 {
+  m_Chain.clear();
   m_Base = LayerState();
   m_Steps.clear();
   m_FinalChecksum.clear();
+  m_HistoryIncomplete = false;
+  if (m_Data.empty())
+    return;
 
-  // The starting point is the last time the layer appeared or was loaded;
-  // what happened to it before that does not affect its final content
-  auto it = m_LayerStates.find(m_TargetLayer);
-  if (it != m_LayerStates.end() && !it->second.empty())
-    m_Base = it->second.back();
+  // In the latest session, the starting point is the last time the layer
+  // appeared or was loaded; what happened to it before that does not affect
+  // its final content
+  unsigned int       latest = (unsigned int)m_Data.size() - 1;
+  const SessionData &data = m_Data[latest];
+  Link               link;
+  link.layer = m_TargetLayer;
+  link.base.session = latest;
+  auto it = data.layer_states.find(m_TargetLayer);
+  if (it != data.layer_states.end() && !it->second.empty())
+    link.base = it->second.back();
 
-  for (const auto &ls : m_AllSteps)
-    if (ls.first == m_TargetLayer && ls.second.seq > m_Base.seq)
-      m_Steps.push_back(ls.second);
+  for (const auto &ls : data.steps)
+    if (ls.first == m_TargetLayer && ls.second.seq > link.base.seq)
+      link.steps.push_back(ls.second);
 
-  unsigned long last_seq = m_Steps.empty() ? m_Base.seq : m_Steps.back().seq;
-  for (const auto &sv : m_Saves)
+  unsigned long last_seq = link.steps.empty() ? link.base.seq : link.steps.back().seq;
+  for (const auto &sv : data.saves)
     if (sv.first == m_TargetLayer && sv.second.seq > last_seq)
       m_FinalChecksum = sv.second.checksum;
+  m_Chain.push_back(link);
+
+  // Follow the history back: a segmentation with labels may have been
+  // loaded from what an earlier save wrote. The last such save before the
+  // starting point, in the same session or an earlier one, is where it came
+  // from; that save's layer goes on from its own starting point before it.
+  // Each link starts earlier than the one after it, so there are at most as
+  // many links as saves; the limit only guards against a mistake here.
+  size_t max_links = 1;
+  for (const SessionData &d : m_Data)
+    max_links += d.saves.size();
+  while (m_Chain.size() <= max_links)
+  {
+    // Copies, since the chain grows at the front below
+    const LayerState &front = m_Chain.front().base;
+    if (front.checksum.empty() || front.blank)
+      break;
+    const unsigned int  start_session = front.session;
+    const unsigned long start_seq = front.seq;
+    const std::string   start_checksum = front.checksum;
+
+    bool found = false;
+    for (int k = (int)start_session; k >= 0 && !found; k--)
+    {
+      const SessionData &d = m_Data[k];
+      for (auto sv = d.saves.rbegin(); sv != d.saves.rend() && !found; ++sv)
+      {
+        if ((k == (int)start_session && sv->second.seq >= start_seq) ||
+            sv->second.checksum != start_checksum)
+          continue;
+
+        auto states = d.layer_states.find(sv->first);
+        if (states == d.layer_states.end())
+          continue;
+        const LayerState *base = nullptr;
+        for (const LayerState &st : states->second)
+          if (st.seq < sv->second.seq)
+            base = &st;
+        if (!base)
+          continue;
+
+        Link prev;
+        prev.layer = sv->first;
+        prev.base = *base;
+        for (const auto &ls : d.steps)
+          if (ls.first == sv->first && ls.second.seq > base->seq && ls.second.seq < sv->second.seq)
+            prev.steps.push_back(ls.second);
+        m_Chain.insert(m_Chain.begin(), prev);
+        found = true;
+      }
+    }
+
+    if (!found)
+    {
+      // Earlier sessions are in the log, but none of them saved what this
+      // one started from
+      m_HistoryIncomplete = start_session > 0;
+      break;
+    }
+  }
+
+  this->Concatenate();
+}
+
+void
+TraceLogReplay::Concatenate()
+{
+  m_Base = m_Chain.empty() ? LayerState() : m_Chain.front().base;
+  m_Steps.clear();
+  for (const Link &link : m_Chain)
+    m_Steps.insert(m_Steps.end(), link.steps.begin(), link.steps.end());
+}
+
+bool
+TraceLogReplay::StartFrom(const std::string &checksum)
+{
+  for (size_t i = 0; i < m_Chain.size(); i++)
+  {
+    Link &link = m_Chain[i];
+    if (link.base.checksum == checksum)
+    {
+      m_Chain.erase(m_Chain.begin(), m_Chain.begin() + i);
+      this->Concatenate();
+      return true;
+    }
+
+    // A save of this layer along the way: the steps after it go on from it
+    const SessionData &d = m_Data[link.base.session];
+    unsigned long end_seq = link.steps.empty() ? link.base.seq : link.steps.back().seq;
+    if (i + 1 == m_Chain.size())
+      end_seq = (unsigned long)-1;
+    for (const auto &sv : d.saves)
+    {
+      if (sv.first != link.layer || sv.second.seq <= link.base.seq || sv.second.seq > end_seq ||
+          sv.second.checksum != checksum)
+        continue;
+
+      LayerState base = sv.second;
+      for (unsigned int dim = 0; dim < 3; dim++)
+        base.size[dim] = link.base.size[dim];
+      base.tps = link.base.tps;
+      base.blank = (checksum == BlankChecksum(base.size, base.tps));
+      std::vector<Step> rest;
+      for (const Step &s : link.steps)
+        if (s.seq > sv.second.seq)
+          rest.push_back(s);
+      link.base = base;
+      link.steps = rest;
+      m_Chain.erase(m_Chain.begin(), m_Chain.begin() + i);
+      this->Concatenate();
+      return true;
+    }
+  }
+  return false;
 }
 
 unsigned long
