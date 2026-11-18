@@ -274,13 +274,17 @@ void SNAPTestQt::callMethod(QObject *obj, QString method, QVariantList args, boo
     if(mm.name() != name || mm.parameterCount() != args.size())
       continue;
 
+    // QGenericArgument keeps only a pointer to the type name, so the names must
+    // outlive invoke(): parameterTypeName() returns a temporary QByteArray
     QVariant converted[5];
+    QByteArray type_names[5];
     QGenericArgument ga[5];
     for(int j = 0; j < args.size(); j++)
       {
       converted[j] = args[j];
       converted[j].convert(QMetaType(mm.parameterType(j)));
-      ga[j] = QGenericArgument(mm.parameterTypeName(j), converted[j].data());
+      type_names[j] = mm.parameterTypeName(j);
+      ga[j] = QGenericArgument(type_names[j].constData(), converted[j].data());
       }
 
     mm.invoke(obj, ct, ga[0], ga[1], ga[2], ga[3], ga[4]);
